@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.0.3
+// @version      1.0.4
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.0.3";
+    const VERSION = "1.0.4";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -63,7 +63,6 @@
 
     const DEFAULT_SETTINGS = {
         minPrice: 500_000,
-        minLevel: 15,       // Torn's noob-island threshold — targets below 15 can't be attacked by players above 15
         minFF:    1.0,
         maxFF:    3.0,
         hospitalMaxMin: 5,
@@ -71,6 +70,16 @@
         toastsEnabled: true,
         debug: false,
     };
+
+    // Torn's noob-island rule: targets below L15 can only be attacked by
+    // players within ±5 levels. Targets L15+ are attackable by anyone above L15.
+    const NOOB_ISLAND_CAP = 15;
+    const NOOB_LEVEL_GAP  = 5;
+    function isAttackableByLevel(targetLevel, myLevel) {
+        if (targetLevel >= NOOB_ISLAND_CAP) return true;
+        if (myLevel == null) return true; // don't filter until we know our own level
+        return Math.abs(targetLevel - myLevel) <= NOOB_LEVEL_GAP;
+    }
 
     const TOAST_TIMEOUT_MS = 15_000;
     const TOAST_MAX_VISIBLE = 5;
@@ -326,6 +335,7 @@
             this.api = api;
             this.settings = loadSettings();
             this.myUserId = null;
+            this.myUserLevel = null;
             this.lastMatches = [];      // last render's rows
             this.lastMatchIds = new Set();
             this.lastCounts = null;     // { total, afterBasic, afterFF, withFF, ffNull, ffError, statusBreakdown }
@@ -379,11 +389,15 @@
             this.lastError = null;
             if (this.onUpdate) this.onUpdate({ loading: true });
 
-            // Resolve our user ID once so we can drop self-targeted bounties.
-            if (!this.myUserId) {
+            // Resolve our user ID + level once. Level feeds the noob-island
+            // attackability rule (target_level >= 15 OR within ±5 of us).
+            if (!this.myUserId || this.myUserLevel == null) {
                 try {
                     const profile = await this.api.validateKey();
-                    this.myUserId = profile && profile.id ? profile.id : null;
+                    if (profile) {
+                        this.myUserId = profile.id || this.myUserId;
+                        this.myUserLevel = (typeof profile.level === "number") ? profile.level : this.myUserLevel;
+                    }
                 } catch { /* non-fatal */ }
             }
 
@@ -399,11 +413,12 @@
                 matches: 0,
             };
 
-            // 1) Level + price + self filter.
-            // Torn's noob-protection: targets below ~L15 can't be attacked by
-            // high-level hunters, so those bounties are unclaimable noise.
+            // 1) Attackability + price + self filter.
+            // Torn's noob-island rule: level<15 targets can only be attacked by
+            // players within ±5 levels. Apply that rule using our own level so
+            // the filter is correct for every hunter, not just high-level ones.
             const byBasic = bounties.filter((b) =>
-                b.target_level >= this.settings.minLevel
+                isAttackableByLevel(b.target_level, this.myUserLevel)
                 && b.reward >= this.settings.minPrice
                 && (this.myUserId == null || b.target_id !== this.myUserId)
             );
@@ -916,10 +931,13 @@ table.bh-table{width:100%;border-collapse:collapse}
                 : "";
             // Pipeline counts expose where filtering is happening so 0-match
             // cases are diagnosable at a glance.
+            const levelHint = this.hunter.myUserLevel != null
+                ? `attackable (L≥15 or ±5 of L${this.hunter.myUserLevel})`
+                : "attackable";
             const pipeline = c ? `
                 <span class="bh-pipe">
                     ${c.total} total
-                    · L≥${this.hunter.settings.minLevel} &amp; $≥${fmt.money(this.hunter.settings.minPrice)}: <b>${c.afterBasic}</b>
+                    · ${levelHint} &amp; $≥${fmt.money(this.hunter.settings.minPrice)}: <b>${c.afterBasic}</b>
                     · with FF: <b>${c.withFF}</b>${c.ffNull ? ` <span class="bh-hint">(${c.ffNull} null)</span>` : ""}
                     · FF ${this.hunter.settings.minFF.toFixed(1)}–${this.hunter.settings.maxFF.toFixed(1)}: <b>${c.afterFF}</b>
                     · status ok: <b>${c.matches}</b>
@@ -1009,11 +1027,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <input id="bh-set-price" class="bh-input" type="number" min="0" step="10000" value="${s.minPrice}">
                         </div>
                         <div class="bh-field">
-                            <label>Min target level</label>
-                            <input id="bh-set-level" class="bh-input" type="number" min="1" max="100" step="1" value="${s.minLevel}">
-                            <span class="bh-hint">Torn's noob-island ends at L15. Higher filters out fresh accounts that can't be attacked.</span>
-                        </div>
-                        <div class="bh-field">
                             <label>Hospital max (minutes remaining)</label>
                             <input id="bh-set-hosp" class="bh-input" type="number" min="0" max="60" step="1" value="${s.hospitalMaxMin}">
                             <span class="bh-hint">0 = Okay only. ~5 lets you queue targets about to leave hospital.</span>
@@ -1092,7 +1105,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                 const cleanMax = Number.isFinite(maxFF) ? Math.max(cleanMin, maxFF) : cleanMin;
                 this.hunter.updateSettings({
                     minPrice: Math.max(0, parseInt($("bh-set-price").value, 10) || 0),
-                    minLevel: Math.max(1, Math.min(100, parseInt($("bh-set-level").value, 10) || 1)),
                     hospitalMaxMin: Math.max(0, Math.min(60, parseInt($("bh-set-hosp").value, 10) || 0)),
                     minFF: cleanMin,
                     maxFF: cleanMax,
@@ -1107,7 +1119,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     this.hunter.stop();
                 }
             };
-            ["bh-set-price", "bh-set-level", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-debug"]
+            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-debug"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
             if (!KeyResolver.isPDAKey()) {
