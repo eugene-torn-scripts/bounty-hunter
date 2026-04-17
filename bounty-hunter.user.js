@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.1.0
+// @version      1.1.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.1.0";
+    const VERSION = "1.1.1";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -422,6 +422,22 @@
             }
 
             const { bounties, delaySec } = await this.api.fetchAllBounties();
+
+            // Collapse multiple bounty rows on the same target + same reward
+            // into one entry with an aggregated count. Rows with different
+            // reward amounts stay separate. This avoids duplicate FFScouter
+            // and profile calls AND cleans up the Hunt list.
+            const grouped = new Map();
+            for (const b of bounties) {
+                const key = `${b.target_id}|${b.reward}`;
+                if (!grouped.has(key)) {
+                    grouped.set(key, { ...b, bountyCount: 0 });
+                }
+                const inc = (typeof b.quantity === "number" && b.quantity > 0) ? b.quantity : 1;
+                grouped.get(key).bountyCount += inc;
+            }
+            const dedupedBounties = [...grouped.values()];
+
             const counts = {
                 total: bounties.length,
                 afterBasic: 0,
@@ -436,7 +452,7 @@
             // 1) Price + self filter. Age-based "new-account" filter happens
             // later (in step 3) since target age requires a per-user profile
             // fetch anyway.
-            const byBasic = bounties.filter((b) =>
+            const byBasic = dedupedBounties.filter((b) =>
                 b.reward >= this.settings.minPrice
                 && (this.myUserId == null || b.target_id !== this.myUserId)
             );
@@ -492,9 +508,12 @@
             matches.sort((a, b) => b.reward - a.reward);
             counts.matches = matches.length;
 
-            // 4) Diff for toasts.
-            const currentIds = new Set(matches.map((m) => Number(m.target_id)));
-            const newOnes = matches.filter((m) => !this.lastMatchIds.has(Number(m.target_id)));
+            // 4) Diff for toasts — key by (target_id, reward) so a new
+            // bounty amount on the same target still fires a fresh toast,
+            // while extra bounties at an already-seen amount don't.
+            const matchKey = (m) => `${m.target_id}|${m.reward}`;
+            const currentIds = new Set(matches.map(matchKey));
+            const newOnes = matches.filter((m) => !this.lastMatchIds.has(matchKey(m)));
             if (this.settings.toastsEnabled && this.onToast && newOnes.length > 0) {
                 this.onToast(newOnes);
             }
@@ -510,7 +529,11 @@
             const out = new Map();
             const now = Date.now();
             const stale = [];
-            for (const id of ids) {
+            // De-dupe IDs so repeated target_ids don't trigger parallel
+            // fetches for the same player. The cache lookup alone isn't
+            // enough — on a cold start every duplicate would still miss.
+            const unique = [...new Set(ids)];
+            for (const id of unique) {
                 const c = this._statusCache.get(id);
                 if (c) {
                     const d = c.data;
@@ -593,10 +616,13 @@
             const statusLabel = isHosp ? fmt.hospLabel(b.hospUntil) : "Okay";
             const statusClass = isHosp ? "bh-badge-hosp" : "bh-badge-ok";
             const hospAttr = isHosp ? ` data-hosp-until="${b.hospUntil}"` : "";
+            const countBadge = b.bountyCount > 1
+                ? ` <span class="bh-count">×${b.bountyCount}</span>`
+                : "";
             el.innerHTML = `
                 <button class="bh-toast-close" title="Dismiss">&times;</button>
                 <div class="bh-toast-head">
-                    <div class="bh-toast-name">${escHtml(b.target_name)} <span class="bh-toast-lvl">L${b.target_level}</span></div>
+                    <div class="bh-toast-name">${escHtml(b.target_name)} <span class="bh-toast-lvl">L${b.target_level}</span>${countBadge}</div>
                     <div class="bh-toast-reward">${escHtml(fmt.money(b.reward))}</div>
                 </div>
                 <div class="bh-toast-meta">
@@ -732,6 +758,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
 .bh-badge-ok{background:#1e3a2a;color:#4caf50}
 .bh-badge-hosp{background:#3a2a1e;color:#ffb74d}
+.bh-count{display:inline-block;padding:1px 6px;margin-left:6px;background:#3a2a4a;color:#c49cff;border-radius:8px;font-size:10px;font-weight:700;vertical-align:middle}
 .bh-empty{text-align:center;color:#888;padding:30px 8px;font-size:14px}
 .bh-empty button{margin-top:10px}
 
@@ -1025,11 +1052,14 @@ table.bh-table{width:100%;border-collapse:collapse}
             const hospAttr = b.statusState === "Hospital" ? ` data-hosp-until="${b.hospUntil}"` : "";
             const statusText = b.statusState === "Hospital" ? fmt.hospLabel(b.hospUntil) : "Okay";
             const ffCell = b.ff == null ? "—" : b.ff.toFixed(2);
+            const countBadge = b.bountyCount > 1
+                ? ` <span class="bh-count">×${b.bountyCount}</span>`
+                : "";
             return `
                 <tr>
                     <td>
                         <a class="bh-name-link" href="${PROFILE_URL}${b.target_id}" target="_blank" rel="noopener">${escHtml(b.target_name)}</a>
-                        <span style="color:#666;font-size:11px"> L${b.target_level}</span>
+                        <span style="color:#666;font-size:11px"> L${b.target_level}</span>${countBadge}
                     </td>
                     <td class="num">${escHtml(fmt.moneyFull(b.reward))}</td>
                     <td class="num">${ffCell}</td>
