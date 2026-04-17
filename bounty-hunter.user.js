@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.1.7
+// @version      1.1.8
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -46,7 +46,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.1.7";
+    const VERSION = "1.1.8";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -705,6 +705,7 @@
         constructor() {
             this.container = null;
             this._cards = []; // { id, el, timer, remaining, enteredAt }
+            this._clearAllEl = null;
         }
 
         ensureContainer() {
@@ -727,7 +728,7 @@
             const overflow = bounties.length - toShow.length;
             for (const b of toShow) this._showOne(b);
             if (overflow > 0) this._showMoreCard(overflow);
-            this._updateClearAllCard();
+            this._updateClearAllButton();
         }
 
         _showOne(b) {
@@ -801,28 +802,30 @@
             this._cards.push(card);
         }
 
-        // A small "Clear all" header-card that appears when 2+ bounty toasts
-        // are on screen. Rendered last in DOM order so the reversed column
-        // flex layout puts it visually on top of the stack.
-        _updateClearAllCard() {
-            const bountyLikeCount = this._cards.filter((c) => !c.isClearAll).length;
-            const existing = this._cards.find((c) => c.isClearAll);
-            if (bountyLikeCount < 2) {
-                if (existing) this._remove(existing);
+        // Small "Clear all" pill button, appears above the stack when 2+
+        // toasts are on screen. Lives inside the container as the last DOM
+        // child so the reversed column flex puts it visually on top.
+        // Clicking only dismisses the toast cards — Hunt-tab matches are
+        // driven by Hunter.lastMatches and are untouched.
+        _updateClearAllButton() {
+            const toastCount = this._cards.filter((c) => !c.isClearAll).length;
+            const existing = this._clearAllEl;
+            if (toastCount < 2) {
+                if (existing) { existing.remove(); this._clearAllEl = null; }
                 return;
             }
             if (existing) {
-                // Keep it at the visual top regardless of which toast was added last.
-                this.container.appendChild(existing.el);
+                // Keep it pinned to the visual top regardless of insertion order.
+                this.container.appendChild(existing);
                 return;
             }
-            const el = document.createElement("div");
-            el.className = "bh-toast bh-toast-clear";
-            el.innerHTML = `<div class="bh-toast-clear-label">✕ Clear all</div>`;
-            const card = { id: null, el, timer: null, remaining: Infinity, enteredAt: 0, isMore: false, isClearAll: true };
-            el.addEventListener("click", (e) => { e.stopPropagation(); this.clearAll(); });
-            this.container.appendChild(el);
-            this._cards.push(card);
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "bh-toast-clear-btn";
+            btn.textContent = "✕ Clear all";
+            btn.addEventListener("click", (e) => { e.stopPropagation(); this.clearAll(); });
+            this.container.appendChild(btn);
+            this._clearAllEl = btn;
         }
 
         _pauseTimer(card) {
@@ -842,13 +845,13 @@
             if (card.timer) clearTimeout(card.timer);
             if (card.el && card.el.parentNode) card.el.parentNode.removeChild(card.el);
             this._cards = this._cards.filter((c) => c !== card);
-            // If this was a bounty toast and there's now only one bounty card
-            // left, the Clear-all header should go away too.
-            if (!card.isClearAll) this._updateClearAllCard();
+            // Count dropped — maybe the Clear-all button should vanish too.
+            this._updateClearAllButton();
         }
 
         clearAll() {
             for (const c of [...this._cards]) this._remove(c);
+            if (this._clearAllEl) { this._clearAllEl.remove(); this._clearAllEl = null; }
         }
     }
 
@@ -967,9 +970,11 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-toast-more{border-left-color:#888;text-align:center}
 .bh-toast-more-label{color:#fff;font-weight:700;font-size:16px}
 .bh-toast-more-hint{color:#888;font-size:11px;margin-top:2px}
-.bh-toast-clear{border-left-color:#555;text-align:center;padding:6px 10px;background:#181818;cursor:pointer}
-.bh-toast-clear:hover{background:#222;border-left-color:#888}
-.bh-toast-clear-label{color:#aaa;font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+.bh-toast-clear-btn{pointer-events:auto;align-self:flex-end;background:rgba(30,30,30,0.9);color:#aaa;
+  border:1px solid #444;border-radius:14px;padding:3px 10px;font-size:11px;font-weight:600;
+  letter-spacing:.5px;text-transform:uppercase;cursor:pointer;font-family:inherit;
+  box-shadow:0 2px 6px rgba(0,0,0,.4)}
+.bh-toast-clear-btn:hover{background:#2a2a2a;color:#fff;border-color:#666}
 
 @media(max-width:768px){
   #bh-panel{width:100vw!important;max-width:100vw;min-width:0;border-radius:0;top:0;left:0;
