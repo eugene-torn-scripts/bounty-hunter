@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.0.8
+// @version      1.0.9
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.0.8";
+    const VERSION = "1.0.9";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -68,6 +68,7 @@
         hospitalMaxMin: 5,
         refreshSec: 60,
         toastsEnabled: true,
+        includeUnknownFF: false,
     };
 
     // Torn New Player Protection (https://wiki.torn.com/wiki/New_Player_Protection):
@@ -440,16 +441,20 @@
             counts.withFF = ff.map.size;
             counts.ffNull = ff.nullCount;
             counts.ffError = ff.error;
+            const includeUnknown = !!this.settings.includeUnknownFF;
             const byFF = byBasic
                 .map((b) => {
                     const e = ff.map.get(Number(b.target_id));
-                    return e ? { ...b, ff: e.ff, bs: e.bs } : null;
+                    if (e) return { ...b, ff: e.ff, bs: e.bs };
+                    // Target not in FF map (FFScouter returned null FF, or wasn't
+                    // in the response at all). Include if the user opted in.
+                    return includeUnknown ? { ...b, ff: null, bs: null } : null;
                 })
-                .filter((b) =>
-                    b != null
-                    && b.ff >= this.settings.minFF
-                    && b.ff <= this.settings.maxFF
-                );
+                .filter((b) => {
+                    if (b == null) return false;
+                    if (b.ff == null) return true; // unknown — pass through
+                    return b.ff >= this.settings.minFF && b.ff <= this.settings.maxFF;
+                });
             counts.afterFF = byFF.length;
 
             // 3) Per-target profile — status, age, faction.
@@ -576,7 +581,7 @@
                     <div class="bh-toast-reward">${escHtml(fmt.money(b.reward))}</div>
                 </div>
                 <div class="bh-toast-meta">
-                    <span class="bh-chip">FF ${b.ff.toFixed(2)}</span>
+                    <span class="bh-chip">FF ${b.ff == null ? "?" : b.ff.toFixed(2)}</span>
                     ${b.bs ? `<span class="bh-chip">BS ${escHtml(b.bs)}</span>` : ""}
                     <span class="bh-chip ${statusClass}">${statusLabel}</span>
                 </div>
@@ -687,10 +692,8 @@
 .bh-tab:hover{color:#ccc!important;background:#2a2a2a}
 .bh-tab.active{color:#ef5350!important;border-bottom-color:#ef5350}
 #bh-content{padding:16px;overflow-y:auto;flex:1;min-height:0}
-#bh-status-line{display:flex;gap:12px;align-items:center;margin-bottom:8px;color:#888;font-size:12px;flex-wrap:wrap}
+#bh-status-line{display:flex;gap:12px;align-items:center;margin-bottom:12px;color:#888;font-size:12px;flex-wrap:wrap}
 #bh-status-line .bh-err{color:#ef5350}
-.bh-pipe{display:block;color:#888;font-size:11px;margin-bottom:12px;padding:6px 10px;background:#1f1f1f;border-left:3px solid #444;border-radius:3px}
-.bh-pipe b{color:#ddd}
 #bh-refresh-btn{padding:4px 10px;background:#333;border:1px solid #444;color:#ddd;border-radius:4px;cursor:pointer;font-size:12px}
 #bh-refresh-btn:hover{background:#3a3a3a}
 #bh-refresh-btn:disabled{opacity:.5;cursor:not-allowed}
@@ -937,33 +940,12 @@ table.bh-table{width:100%;border-collapse:collapse}
             const errLine = this.hunter.lastError
                 ? `<span class="bh-err">${escHtml(this.hunter.lastError.message || "error")}</span>`
                 : "";
-            const ffKeyMissing = !KeyResolver.getFFKey()
-                ? `<span class="bh-err">No FFScouter key set — every target will be excluded. Add one in Settings.</span>`
+            const ffKeyMissing = !KeyResolver.getFFKey() && !this.hunter.settings.includeUnknownFF
+                ? `<span class="bh-err">No FFScouter key set — every target will be excluded. Add one in Settings, or enable "Include unknown-FF targets".</span>`
                 : "";
             const ffError = c && c.ffError
                 ? `<span class="bh-err">FFScouter: ${escHtml(c.ffError)}</span>`
                 : "";
-            // Pipeline counts expose where filtering is happening so 0-match
-            // cases are diagnosable at a glance.
-            const tooNewHint = c && c.tooNew ? ` <span class="bh-hint">(${c.tooNew} too new)</span>` : "";
-            // Show which NPP rule applies right now so the user understands the filter.
-            let nppLabel = "";
-            if (this.hunter.myUserAge != null) {
-                const effective = this.hunter.myUserAge < 14 ? 1 : 14;
-                const youState = this.hunter.myUserAge < 14
-                    ? `you are under NPP (age ${this.hunter.myUserAge}d)`
-                    : `you are past NPP`;
-                nppLabel = ` <span class="bh-hint">· NPP: ${youState}, target age must be ≥ ${effective}d</span>`;
-            }
-            const pipeline = c ? `
-                <span class="bh-pipe">
-                    ${c.total} total
-                    · $≥${fmt.money(this.hunter.settings.minPrice)}: <b>${c.afterBasic}</b>
-                    · with FF: <b>${c.withFF}</b>${c.ffNull ? ` <span class="bh-hint">(${c.ffNull} null)</span>` : ""}
-                    · FF ${this.hunter.settings.minFF.toFixed(1)}–${this.hunter.settings.maxFF.toFixed(1)}: <b>${c.afterFF}</b>
-                    · attackable &amp; status ok: <b>${c.matches}</b>${tooNewHint}${nppLabel}
-                </span>
-            ` : "";
             content.innerHTML = `
                 <div id="bh-status-line">
                     <button id="bh-refresh-btn" class="bh-btn-muted">Refresh now</button>
@@ -973,7 +955,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                     ${ffKeyMissing}
                     ${ffError}
                 </div>
-                ${pipeline}
                 ${m.length === 0 ? `
                     <div class="bh-empty">
                         No bounties match your filters right now.<br>
@@ -1017,6 +998,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             const statusText = b.statusState === "Hospital"
                 ? `🏥 ${Math.ceil((b.hospRemaining || 0) / 60)}m`
                 : "Okay";
+            const ffCell = b.ff == null ? "—" : b.ff.toFixed(2);
             return `
                 <tr>
                     <td>
@@ -1024,7 +1006,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                         <span style="color:#666;font-size:11px"> L${b.target_level}</span>
                     </td>
                     <td class="num">${escHtml(fmt.moneyFull(b.reward))}</td>
-                    <td class="num">${b.ff.toFixed(2)}</td>
+                    <td class="num">${ffCell}</td>
                     <td>${escHtml(b.bs || "—")}</td>
                     <td><span class="bh-badge ${statusClass}">${statusText}</span></td>
                     <td><button class="bh-attack" data-id="${b.target_id}">Attack →</button></td>
@@ -1080,6 +1062,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                         <div class="bh-field">
                             <label>Notifications</label>
                             <label class="bh-check"><input type="checkbox" id="bh-set-toasts"${s.toastsEnabled ? " checked" : ""}> Show toast for new matches</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-unkff"${s.includeUnknownFF ? " checked" : ""}> Include targets with unknown FF score</label>
                         </div>
                     </div>
                 </div>
@@ -1130,6 +1113,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     maxFF: cleanMax,
                     refreshSec: parseInt($("bh-set-refresh").value, 10),
                     toastsEnabled: $("bh-set-toasts").checked,
+                    includeUnknownFF: $("bh-set-unkff").checked,
                 });
                 if (this.hunter.settings.refreshSec > 0) {
                     this.hunter.stop();
@@ -1138,7 +1122,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     this.hunter.stop();
                 }
             };
-            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts"]
+            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-unkff"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
             if (!KeyResolver.isPDAKey()) {
