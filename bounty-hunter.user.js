@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.1.3
+// @version      1.1.4
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.1.3";
+    const VERSION = "1.1.4";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -758,7 +758,7 @@
 #bh-refresh-btn:disabled{opacity:.5;cursor:not-allowed}
 
 table.bh-table{width:100%;border-collapse:collapse}
-.bh-table th,.bh-table td{padding:8px 10px;text-align:left;border-bottom:1px solid #333;font-size:13px;
+.bh-table th,.bh-table td{padding:8px 14px;text-align:left;border-bottom:1px solid #333;font-size:13px;
   color:#ddd;vertical-align:middle;white-space:nowrap}
 .bh-table th{color:#999!important;font-weight:600;text-transform:uppercase;font-size:11px;position:sticky;
   top:0;background:#1a1a1a;border-bottom:2px solid #444;user-select:none}
@@ -1054,7 +1054,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                                 <th data-sort="reward" class="num ${thCls("reward")}">Reward</th>
                                 <th data-sort="ff" class="num ${thCls("ff")}">FF</th>
                                 <th data-sort="bs" class="num bh-col-divider ${thCls("bs")}">BS</th>
-                                <th data-sort="status" class="${thCls("status")}">Status</th>
+                                <th data-sort="status" class="bh-col-divider ${thCls("status")}">Status</th>
                                 <th></th>
                             </tr>
                         </thead>
@@ -1145,7 +1145,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <td class="num">${escHtml(fmt.moneyFull(b.reward))}</td>
                     <td class="num">${ffCell}</td>
                     <td class="num bh-col-divider">${escHtml(b.bs || "—")}</td>
-                    <td><span class="bh-badge ${statusClass}"${hospAttr}>${statusText}</span></td>
+                    <td class="bh-col-divider"><span class="bh-badge ${statusClass}"${hospAttr}>${statusText}</span></td>
                     <td><button class="bh-attack" data-id="${b.target_id}">Attack →</button></td>
                 </tr>
             `;
