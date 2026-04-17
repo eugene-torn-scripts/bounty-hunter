@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.0.2
+// @version      1.0.3
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.0.2";
+    const VERSION = "1.0.3";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -63,6 +63,7 @@
 
     const DEFAULT_SETTINGS = {
         minPrice: 500_000,
+        minLevel: 15,       // Torn's noob-island threshold — targets below 15 can't be attacked by players above 15
         minFF:    1.0,
         maxFF:    3.0,
         hospitalMaxMin: 5,
@@ -327,7 +328,7 @@
             this.myUserId = null;
             this.lastMatches = [];      // last render's rows
             this.lastMatchIds = new Set();
-            this.lastCounts = null;     // { total, afterPrice, afterFF, withFF, ffNull, ffError, statusBreakdown }
+            this.lastCounts = null;     // { total, afterBasic, afterFF, withFF, ffNull, ffError, statusBreakdown }
             this._statusCache = new Map(); // id → { status, fetchedAt }
             this._timer = null;
             this._running = false;
@@ -389,7 +390,7 @@
             const { bounties, delaySec } = await this.api.fetchAllBounties();
             const counts = {
                 total: bounties.length,
-                afterPrice: 0,
+                afterBasic: 0,
                 withFF: 0,
                 ffNull: 0,
                 ffError: null,
@@ -398,21 +399,24 @@
                 matches: 0,
             };
 
-            // 1) Price + self filter
-            const byPrice = bounties.filter((b) =>
-                b.reward >= this.settings.minPrice
+            // 1) Level + price + self filter.
+            // Torn's noob-protection: targets below ~L15 can't be attacked by
+            // high-level hunters, so those bounties are unclaimable noise.
+            const byBasic = bounties.filter((b) =>
+                b.target_level >= this.settings.minLevel
+                && b.reward >= this.settings.minPrice
                 && (this.myUserId == null || b.target_id !== this.myUserId)
             );
-            counts.afterPrice = byPrice.length;
+            counts.afterBasic = byBasic.length;
 
             // 2) Bulk FFScouter — keep only rows with a known FF in range.
             const ffKey = KeyResolver.getFFKey();
-            const ids = [...new Set(byPrice.map((b) => Number(b.target_id)))];
+            const ids = [...new Set(byBasic.map((b) => Number(b.target_id)))];
             const ff = await fetchFFScouterStats(ffKey, ids);
             counts.withFF = ff.map.size;
             counts.ffNull = ff.nullCount;
             counts.ffError = ff.error;
-            const byFF = byPrice
+            const byFF = byBasic
                 .map((b) => {
                     const e = ff.map.get(Number(b.target_id));
                     return e ? { ...b, ff: e.ff, bs: e.bs } : null;
@@ -915,7 +919,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             const pipeline = c ? `
                 <span class="bh-pipe">
                     ${c.total} total
-                    · $≥${fmt.money(this.hunter.settings.minPrice)}: <b>${c.afterPrice}</b>
+                    · L≥${this.hunter.settings.minLevel} &amp; $≥${fmt.money(this.hunter.settings.minPrice)}: <b>${c.afterBasic}</b>
                     · with FF: <b>${c.withFF}</b>${c.ffNull ? ` <span class="bh-hint">(${c.ffNull} null)</span>` : ""}
                     · FF ${this.hunter.settings.minFF.toFixed(1)}–${this.hunter.settings.maxFF.toFixed(1)}: <b>${c.afterFF}</b>
                     · status ok: <b>${c.matches}</b>
@@ -1005,6 +1009,11 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <input id="bh-set-price" class="bh-input" type="number" min="0" step="10000" value="${s.minPrice}">
                         </div>
                         <div class="bh-field">
+                            <label>Min target level</label>
+                            <input id="bh-set-level" class="bh-input" type="number" min="1" max="100" step="1" value="${s.minLevel}">
+                            <span class="bh-hint">Torn's noob-island ends at L15. Higher filters out fresh accounts that can't be attacked.</span>
+                        </div>
+                        <div class="bh-field">
                             <label>Hospital max (minutes remaining)</label>
                             <input id="bh-set-hosp" class="bh-input" type="number" min="0" max="60" step="1" value="${s.hospitalMaxMin}">
                             <span class="bh-hint">0 = Okay only. ~5 lets you queue targets about to leave hospital.</span>
@@ -1083,6 +1092,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                 const cleanMax = Number.isFinite(maxFF) ? Math.max(cleanMin, maxFF) : cleanMin;
                 this.hunter.updateSettings({
                     minPrice: Math.max(0, parseInt($("bh-set-price").value, 10) || 0),
+                    minLevel: Math.max(1, Math.min(100, parseInt($("bh-set-level").value, 10) || 1)),
                     hospitalMaxMin: Math.max(0, Math.min(60, parseInt($("bh-set-hosp").value, 10) || 0)),
                     minFF: cleanMin,
                     maxFF: cleanMax,
@@ -1097,7 +1107,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     this.hunter.stop();
                 }
             };
-            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-debug"]
+            ["bh-set-price", "bh-set-level", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-debug"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
             if (!KeyResolver.isPDAKey()) {
