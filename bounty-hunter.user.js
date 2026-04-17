@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.0.1
+// @version      1.0.2
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.0.1";
+    const VERSION = "1.0.2";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -55,8 +55,11 @@
     const API_BASE = "https://api.torn.com/v2";
     const FF_BASE  = "https://ffscouter.com/api/v1";
     const API_DELAY_MS = 750;
-    const BOUNTIES_URL = "https://www.torn.com/bounties.php#!p=main&start=0&action=claim&ID=";
-    const PROFILE_URL  = "https://www.torn.com/profiles.php?XID=";
+    // Direct attack URL — lands on the fight page for the target. Torn
+    // auto-credits the bounty when the target is hospitalised, so we don't
+    // need `&bounty=<contract_id>` (which isn't in the public API anyway).
+    const ATTACK_URL  = "https://www.torn.com/page.php?sid=attack&user2ID=";
+    const PROFILE_URL = "https://www.torn.com/profiles.php?XID=";
 
     const DEFAULT_SETTINGS = {
         minPrice: 500_000,
@@ -555,7 +558,7 @@
             });
             const attack = (e) => {
                 if (e) { e.preventDefault(); e.stopPropagation(); }
-                openTornUrl(BOUNTIES_URL + b.target_id);
+                openTornUrl(ATTACK_URL + b.target_id);
                 dismiss();
             };
             el.querySelector(".bh-toast-attack").addEventListener("click", attack);
@@ -961,7 +964,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                 el.addEventListener("click", (e) => {
                     e.preventDefault();
                     const id = el.dataset.id;
-                    openTornUrl(BOUNTIES_URL + id);
+                    openTornUrl(ATTACK_URL + id);
                 });
             });
         }

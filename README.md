@@ -40,7 +40,7 @@ All configurable in the Settings tab:
 
 ## Toasts
 
-When new matches appear, a small card slides in from the bottom-right corner of the Torn page. Each card shows target name + level, reward, FF, BS estimate, and status; clicking anywhere on the card opens the **claim URL** (`bounties.php?…&action=claim&ID=<target_id>`) in a new tab.
+When new matches appear, a small card slides in from the bottom-right corner of the Torn page. Each card shows target name + level, reward, FF, BS estimate, and status; clicking anywhere on the card opens the **attack URL** (`page.php?sid=attack&user2ID=<target_id>`) in a new tab. Torn auto-credits the bounty when the target is hospitalised.
 
 - Auto-dismiss after 15 s; **hover pauses the timer**; the `×` button dismisses instantly.
 - Up to 5 cards on screen at once. If more than 5 fresh matches appear in one refresh, the 6th and beyond collapse into a single `+N more` card that opens the main panel when clicked.
