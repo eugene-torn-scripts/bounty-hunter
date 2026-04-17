@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.1.5
+// @version      1.1.6
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -46,12 +46,18 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.1.5";
+    const VERSION = "1.1.6";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
         settings: "bh_settings",
+        shared:   "bh_shared",   // cross-tab: last refresh result (matches + metadata)
     };
+    // When shared data is younger than (refreshSec * SHARED_FRESH_RATIO) ms,
+    // a tab skips its own refresh and free-rides on the writer's result.
+    // 0.8 leaves headroom for clock drift between tabs that started close
+    // together — we'd rather free-ride than double-fetch.
+    const SHARED_FRESH_RATIO = 0.8;
     const SPA_LS_APIKEY = "spa_apiKey"; // reuse SPA's key on desktop if present
 
     const API_BASE = "https://api.torn.com/v2";
@@ -389,6 +395,71 @@
             // Reset diff memory so tightening/loosening filters doesn't spam toasts
             // with everything, nor suppress legitimate new matches.
             this.lastMatchIds = new Set();
+            // Invalidate the cross-tab cache — its matches were computed with the
+            // previous filters, so neither this tab nor its siblings should reuse it.
+            try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
+        }
+
+        // --- Cross-tab sharing ---------------------------------------------
+
+        _readShared() {
+            try {
+                const raw = localStorage.getItem(LS.shared);
+                if (!raw) return null;
+                const s = JSON.parse(raw);
+                if (!s || typeof s.writtenAt !== "number") return null;
+                return s;
+            } catch { return null; }
+        }
+
+        _writeShared() {
+            try {
+                const payload = {
+                    writtenAt: Date.now(),
+                    refreshSec: this.settings.refreshSec,
+                    matches: this.lastMatches,
+                    lastCounts: this.lastCounts,
+                    myUserId: this.myUserId,
+                    myUserLevel: this.myUserLevel,
+                    myUserAge: this.myUserAge,
+                    lastError: this.lastError ? (this.lastError.message || "error") : null,
+                };
+                localStorage.setItem(LS.shared, JSON.stringify(payload));
+            } catch { /* quota or serialization failure — non-fatal */ }
+        }
+
+        // Adopt the "who am I" hints another tab has already resolved; saves one
+        // /user/profile call on a cold tab that piggybacks on a warmer one.
+        _adoptSharedIdentity(s) {
+            if (s.myUserId != null && this.myUserId == null) this.myUserId = s.myUserId;
+            if (s.myUserLevel != null && this.myUserLevel == null) this.myUserLevel = s.myUserLevel;
+            if (s.myUserAge != null && this.myUserAge == null) this.myUserAge = s.myUserAge;
+        }
+
+        // Apply a new match list: diff against previous to fire toasts, update
+        // lastMatches/lastMatchIds. Shared by the real-refresh path and the
+        // cross-tab free-ride path.
+        _applyMatches(matches) {
+            const matchKey = (m) => `${m.target_id}|${m.reward}`;
+            const currentIds = new Set(matches.map(matchKey));
+            const newOnes = matches.filter((m) => !this.lastMatchIds.has(matchKey(m)));
+            if (this.settings.toastsEnabled && this.onToast && newOnes.length > 0) {
+                this.onToast(newOnes);
+            }
+            this.lastMatches = matches;
+            this.lastMatchIds = currentIds;
+        }
+
+        // Called by the `storage` event listener when another tab writes new
+        // shared data. Updates our in-memory state + re-renders via onUpdate.
+        adoptSharedPayload(s) {
+            if (!s) return;
+            this._adoptSharedIdentity(s);
+            if (Array.isArray(s.matches)) {
+                this.lastCounts = s.lastCounts || null;
+                this._applyMatches(s.matches);
+            }
+            if (this.onUpdate) this.onUpdate();
         }
 
         stop() {
@@ -406,9 +477,22 @@
             if (!this._running) return;
             let waitSec = this.settings.refreshSec;
             try {
-                const delaySec = await this.refresh();
-                // Never poll faster than Torn's global bounty cache refresh rate.
-                waitSec = Math.max(this.settings.refreshSec, delaySec || 0);
+                // Cross-tab free-ride: if another tab refreshed recently under
+                // the same settings, reuse its result instead of burning our
+                // own API budget. Keeps N-tab users at ~1× call cost.
+                const shared = this._readShared();
+                const fresh = shared
+                    && (Date.now() - shared.writtenAt) < (this.settings.refreshSec * 1000 * SHARED_FRESH_RATIO);
+                if (fresh) {
+                    this._adoptSharedIdentity(shared);
+                    this.lastCounts = shared.lastCounts || null;
+                    this.lastError = null;
+                    this._applyMatches(shared.matches || []);
+                    if (this.onUpdate) this.onUpdate();
+                } else {
+                    const delaySec = await this.refresh();
+                    waitSec = Math.max(this.settings.refreshSec, delaySec || 0);
+                }
             } catch (err) {
                 this.lastError = err;
                 if (this.onUpdate) this.onUpdate();
@@ -524,19 +608,10 @@
             matches.sort((a, b) => b.reward - a.reward);
             counts.matches = matches.length;
 
-            // 4) Diff for toasts — key by (target_id, reward) so a new
-            // bounty amount on the same target still fires a fresh toast,
-            // while extra bounties at an already-seen amount don't.
-            const matchKey = (m) => `${m.target_id}|${m.reward}`;
-            const currentIds = new Set(matches.map(matchKey));
-            const newOnes = matches.filter((m) => !this.lastMatchIds.has(matchKey(m)));
-            if (this.settings.toastsEnabled && this.onToast && newOnes.length > 0) {
-                this.onToast(newOnes);
-            }
-
-            this.lastMatches = matches;
-            this.lastMatchIds = currentIds;
+            // 4) Diff for toasts + render + cross-tab broadcast.
             this.lastCounts = counts;
+            this._applyMatches(matches);
+            this._writeShared();
             if (this.onUpdate) this.onUpdate({ loading: false });
             return delaySec;
         }
@@ -1521,6 +1596,18 @@ table.bh-table{width:100%;border-collapse:collapse}
 
         ui.inject();
         ui.setAuthed(!!initialKey);
+
+        // Cross-tab sync: when another tab writes fresh match data, adopt it
+        // here and re-render. The Hunter's own _tick path separately reads
+        // the same store on its next cycle to decide whether to skip its
+        // own fetch.
+        window.addEventListener("storage", (e) => {
+            if (e.key !== LS.shared || !e.newValue) return;
+            try {
+                const payload = JSON.parse(e.newValue);
+                hunter.adoptSharedPayload(payload);
+            } catch { /* ignore malformed writes */ }
+        });
 
         const W = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
         W.registerEugeneScript({

@@ -191,10 +191,10 @@ Suggested screenshots to capture:
   <span style="font-size: 18px;">
     <strong
       ><a
-        href="https://github.com/eugene-torn-scripts/bounty-hunter/raw/main/bounty-hunter.user.js"
+        href="https://greasyfork.org/scripts/574289-bounty-hunter/code/Bounty%20Hunter.user.js"
         target="_blank"
         rel="noopener"
-        >⬇️ Install from GitHub</a
+        >⬇️ Install from Greasyfork</a
       ></strong
     >
   </span>
