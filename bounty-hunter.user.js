@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.0.0
+// @version      1.0.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      api.torn.com
+// @connect      ffscouter.com
 // @license      GPL-3.0-or-later
 // ==/UserScript==
 
@@ -41,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.0.0";
+    const VERSION = "1.0.1";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -62,6 +65,7 @@
         hospitalMaxMin: 5,
         refreshSec: 60,
         toastsEnabled: true,
+        debug: false,
     };
 
     const TOAST_TIMEOUT_MS = 15_000;
@@ -71,6 +75,11 @@
 
     const IS_PDA = typeof PDA_httpGet === "function";
     const HAS_PDA_KEY = PDA_API_KEY !== PDA_PLACEHOLDER && /^[A-Za-z0-9]{16}$/.test(PDA_API_KEY);
+    // Desktop userscript managers expose GM_xmlhttpRequest when the script
+    // requests `@grant GM_xmlhttpRequest`. We prefer it over fetch because
+    // FFScouter's CORS headers may not allow direct calls from torn.com.
+    // eslint-disable-next-line no-undef
+    const GM_XHR = (typeof GM_xmlhttpRequest !== "undefined") ? GM_xmlhttpRequest : null;
 
     // ════════════════════════════════════════════════════════════
     //  UTILITIES
@@ -132,6 +141,18 @@
     //  HTTP — uses PDA_httpGet inside PDA, fetch on desktop
     // ════════════════════════════════════════════════════════════
 
+    function _gmGet(url) {
+        return new Promise((resolve, reject) => {
+            GM_XHR({
+                method: "GET",
+                url,
+                onload: (r) => resolve({ status: r.status, text: r.responseText }),
+                onerror: () => reject(new Error("network_error")),
+                ontimeout: () => reject(new Error("timeout")),
+            });
+        });
+    }
+
     async function _httpGetOnce(url) {
         if (IS_PDA) {
             const res = await PDA_httpGet(url);
@@ -142,6 +163,16 @@
                 throw err;
             }
             return JSON.parse(res.responseText);
+        }
+        if (GM_XHR) {
+            const res = await _gmGet(url);
+            if (res.status < 200 || res.status >= 300) {
+                const err = new Error(`HTTP ${res.status}`);
+                err.status = res.status;
+                err.body = res.text;
+                throw err;
+            }
+            return JSON.parse(res.text);
         }
         const res = await fetch(url);
         if (!res.ok) {
@@ -229,25 +260,32 @@
     // ════════════════════════════════════════════════════════════
 
     async function fetchFFScouterStats(key, userIds) {
-        if (!key || userIds.length === 0) return new Map();
-        const out = new Map();
+        const result = { map: new Map(), error: null, nullCount: 0, totalReturned: 0 };
+        if (!key) { result.error = "no_key"; return result; }
+        if (userIds.length === 0) return result;
         for (let i = 0; i < userIds.length; i += 200) {
             const chunk = userIds.slice(i, i + 200);
             const url = `${FF_BASE}/get-stats?key=${encodeURIComponent(key)}&targets=${chunk.join(",")}`;
             try {
                 const data = await httpGetJson(url);
-                if (!Array.isArray(data)) continue;
+                if (!Array.isArray(data)) {
+                    result.error = (data && data.error) ? data.error : "unexpected_response";
+                    continue;
+                }
+                result.totalReturned += data.length;
                 for (const p of data) {
-                    // Per spec: skip targets with no FF score.
-                    if (p.fair_fight == null) continue;
-                    out.set(Number(p.player_id), {
+                    if (p.fair_fight == null) { result.nullCount++; continue; }
+                    result.map.set(Number(p.player_id), {
                         ff: Number(p.fair_fight),
                         bs: p.bs_estimate_human || null,
                     });
                 }
-            } catch { /* non-fatal — caller treats missing entries as "no FF" */ }
+            } catch (e) {
+                // Surface the first error but keep processing other chunks.
+                if (!result.error) result.error = e.message || "network_error";
+            }
         }
-        return out;
+        return result;
     }
 
     // ════════════════════════════════════════════════════════════
@@ -286,6 +324,7 @@
             this.myUserId = null;
             this.lastMatches = [];      // last render's rows
             this.lastMatchIds = new Set();
+            this.lastCounts = null;     // { total, afterPrice, afterFF, withFF, ffNull, ffError, statusBreakdown }
             this._statusCache = new Map(); // id → { status, fetchedAt }
             this._timer = null;
             this._running = false;
@@ -345,27 +384,42 @@
             }
 
             const { bounties, delaySec } = await this.api.fetchAllBounties();
+            const counts = {
+                total: bounties.length,
+                afterPrice: 0,
+                withFF: 0,
+                ffNull: 0,
+                ffError: null,
+                afterFF: 0,
+                statusBreakdown: {},
+                matches: 0,
+            };
 
             // 1) Price + self filter
             const byPrice = bounties.filter((b) =>
                 b.reward >= this.settings.minPrice
                 && (this.myUserId == null || b.target_id !== this.myUserId)
             );
+            counts.afterPrice = byPrice.length;
 
             // 2) Bulk FFScouter — keep only rows with a known FF in range.
             const ffKey = KeyResolver.getFFKey();
             const ids = [...new Set(byPrice.map((b) => Number(b.target_id)))];
-            const ffMap = await fetchFFScouterStats(ffKey, ids);
+            const ff = await fetchFFScouterStats(ffKey, ids);
+            counts.withFF = ff.map.size;
+            counts.ffNull = ff.nullCount;
+            counts.ffError = ff.error;
             const byFF = byPrice
                 .map((b) => {
-                    const ff = ffMap.get(Number(b.target_id));
-                    return ff ? { ...b, ff: ff.ff, bs: ff.bs } : null;
+                    const e = ff.map.get(Number(b.target_id));
+                    return e ? { ...b, ff: e.ff, bs: e.bs } : null;
                 })
                 .filter((b) =>
                     b != null
                     && b.ff >= this.settings.minFF
                     && b.ff <= this.settings.maxFF
                 );
+            counts.afterFF = byFF.length;
 
             // 3) Per-target status — Okay, or Hospital within the user-set window.
             const nowSec = Math.floor(Date.now() / 1000);
@@ -374,8 +428,9 @@
             const matches = [];
             for (const b of byFF) {
                 const s = statuses.get(Number(b.target_id));
-                if (!s) continue;
+                if (!s) { counts.statusBreakdown["unknown"] = (counts.statusBreakdown["unknown"] || 0) + 1; continue; }
                 const state = s.state;
+                counts.statusBreakdown[state] = (counts.statusBreakdown[state] || 0) + 1;
                 const until = s.until || 0;
                 const remaining = Math.max(0, until - nowSec);
                 if (state === "Okay") {
@@ -385,6 +440,12 @@
                 }
             }
             matches.sort((a, b) => b.reward - a.reward);
+            counts.matches = matches.length;
+
+            if (this.settings.debug) {
+                // eslint-disable-next-line no-console
+                console.log("[BH] refresh", counts, { sampleBounty: bounties[0], sampleFF: ff.map.size > 0 ? [...ff.map.entries()][0] : null });
+            }
 
             // 4) Diff for toasts.
             const currentIds = new Set(matches.map((m) => Number(m.target_id)));
@@ -395,6 +456,7 @@
 
             this.lastMatches = matches;
             this.lastMatchIds = currentIds;
+            this.lastCounts = counts;
             if (this.onUpdate) this.onUpdate({ loading: false });
             return delaySec;
         }
@@ -589,8 +651,10 @@
 .bh-tab:hover{color:#ccc!important;background:#2a2a2a}
 .bh-tab.active{color:#ef5350!important;border-bottom-color:#ef5350}
 #bh-content{padding:16px;overflow-y:auto;flex:1;min-height:0}
-#bh-status-line{display:flex;gap:12px;align-items:center;margin-bottom:12px;color:#888;font-size:12px;flex-wrap:wrap}
+#bh-status-line{display:flex;gap:12px;align-items:center;margin-bottom:8px;color:#888;font-size:12px;flex-wrap:wrap}
 #bh-status-line .bh-err{color:#ef5350}
+.bh-pipe{display:block;color:#888;font-size:11px;margin-bottom:12px;padding:6px 10px;background:#1f1f1f;border-left:3px solid #444;border-radius:3px}
+.bh-pipe b{color:#ddd}
 #bh-refresh-btn{padding:4px 10px;background:#333;border:1px solid #444;color:#ddd;border-radius:4px;cursor:pointer;font-size:12px}
 #bh-refresh-btn:hover{background:#3a3a3a}
 #bh-refresh-btn:disabled{opacity:.5;cursor:not-allowed}
@@ -832,6 +896,7 @@ table.bh-table{width:100%;border-collapse:collapse}
         _renderHunt() {
             const content = this._panel.querySelector("#bh-content");
             const m = this.hunter.lastMatches;
+            const c = this.hunter.lastCounts;
             const nextIn = this.hunter.secondsUntilRefresh();
             const errLine = this.hunter.lastError
                 ? `<span class="bh-err">${escHtml(this.hunter.lastError.message || "error")}</span>`
@@ -839,6 +904,20 @@ table.bh-table{width:100%;border-collapse:collapse}
             const ffKeyMissing = !KeyResolver.getFFKey()
                 ? `<span class="bh-err">No FFScouter key set — every target will be excluded. Add one in Settings.</span>`
                 : "";
+            const ffError = c && c.ffError
+                ? `<span class="bh-err">FFScouter: ${escHtml(c.ffError)}</span>`
+                : "";
+            // Pipeline counts expose where filtering is happening so 0-match
+            // cases are diagnosable at a glance.
+            const pipeline = c ? `
+                <span class="bh-pipe">
+                    ${c.total} total
+                    · $≥${fmt.money(this.hunter.settings.minPrice)}: <b>${c.afterPrice}</b>
+                    · with FF: <b>${c.withFF}</b>${c.ffNull ? ` <span class="bh-hint">(${c.ffNull} null)</span>` : ""}
+                    · FF ${this.hunter.settings.minFF.toFixed(1)}–${this.hunter.settings.maxFF.toFixed(1)}: <b>${c.afterFF}</b>
+                    · status ok: <b>${c.matches}</b>
+                </span>
+            ` : "";
             content.innerHTML = `
                 <div id="bh-status-line">
                     <button id="bh-refresh-btn" class="bh-btn-muted">Refresh now</button>
@@ -846,7 +925,9 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <span>${m.length} match${m.length === 1 ? "" : "es"}</span>
                     ${errLine}
                     ${ffKeyMissing}
+                    ${ffError}
                 </div>
+                ${pipeline}
                 ${m.length === 0 ? `
                     <div class="bh-empty">
                         No bounties match your filters right now.<br>
@@ -953,6 +1034,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                         <div class="bh-field">
                             <label>Notifications</label>
                             <label class="bh-check"><input type="checkbox" id="bh-set-toasts"${s.toastsEnabled ? " checked" : ""}> Show toast for new matches</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-debug"${s.debug ? " checked" : ""}> Debug: log refresh pipeline to console</label>
                         </div>
                     </div>
                 </div>
@@ -1003,6 +1085,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     maxFF: cleanMax,
                     refreshSec: parseInt($("bh-set-refresh").value, 10),
                     toastsEnabled: $("bh-set-toasts").checked,
+                    debug: $("bh-set-debug").checked,
                 });
                 if (this.hunter.settings.refreshSec > 0) {
                     this.hunter.stop();
@@ -1011,7 +1094,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     this.hunter.stop();
                 }
             };
-            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts"]
+            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-debug"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
             if (!KeyResolver.isPDAKey()) {
