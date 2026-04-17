@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.1.1
+// @version      1.1.2
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.1.1";
+    const VERSION = "1.1.2";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -134,6 +134,20 @@
     };
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // Parse FFScouter's bs_estimate_human ("3.93k" / "2.99b") to a comparable
+    // number. Returns null for missing/unparseable values so callers can sort
+    // them to the end.
+    function parseBS(human) {
+        if (!human) return null;
+        const m = String(human).match(/^\s*([\d.]+)\s*([kKmMbB]?)\s*$/);
+        if (!m) return null;
+        const n = parseFloat(m[1]);
+        if (!Number.isFinite(n)) return null;
+        const s = (m[2] || "").toLowerCase();
+        const mult = s === "k" ? 1e3 : s === "m" ? 1e6 : s === "b" ? 1e9 : 1;
+        return n * mult;
+    }
 
     function escHtml(s) {
         return String(s == null ? "" : s)
@@ -747,9 +761,15 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-table th,.bh-table td{padding:8px 10px;text-align:left;border-bottom:1px solid #333;font-size:13px;
   color:#ddd;vertical-align:middle;white-space:nowrap}
 .bh-table th{color:#999!important;font-weight:600;text-transform:uppercase;font-size:11px;position:sticky;
-  top:0;background:#1a1a1a;border-bottom:2px solid #444}
+  top:0;background:#1a1a1a;border-bottom:2px solid #444;user-select:none}
+.bh-table th[data-sort]{cursor:pointer}
+.bh-table th[data-sort]:hover{color:#fff!important}
+.bh-table th[data-sort]::after{content:" ⇅";color:#555;font-size:10px}
+.bh-table th[data-sort].sort-asc::after{content:" ▲";color:#ef5350;font-size:10px}
+.bh-table th[data-sort].sort-desc::after{content:" ▼";color:#ef5350;font-size:10px}
 .bh-table tbody tr:hover td{background:#252525}
 .bh-table td.num,.bh-table th.num{text-align:right;font-variant-numeric:tabular-nums}
+.bh-table td.bh-col-divider,.bh-table th.bh-col-divider{padding-left:18px;border-left:1px solid #2a2a2a}
 .bh-attack{display:inline-block;padding:4px 10px;background:#ef5350;color:#fff!important;border-radius:4px;
   text-decoration:none;font-weight:600;font-size:12px;border:none;cursor:pointer}
 .bh-attack:hover{background:#f44336}
@@ -835,6 +855,8 @@ table.bh-table{width:100%;border-collapse:collapse}
             this._panel = null;
             this._overlay = null;
             this._authed = false;
+            this._sortCol = "reward";
+            this._sortDir = "desc";
         }
 
         inject() {
@@ -988,7 +1010,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 
         _renderHunt() {
             const content = this._panel.querySelector("#bh-content");
-            const m = this.hunter.lastMatches;
+            const rows = this._sortMatches(this.hunter.lastMatches);
             const c = this.hunter.lastCounts;
             const nextIn = this.hunter.secondsUntilRefresh();
             const errLine = this.hunter.lastError
@@ -1000,16 +1022,20 @@ table.bh-table{width:100%;border-collapse:collapse}
             const ffError = c && c.ffError
                 ? `<span class="bh-err">FFScouter: ${escHtml(c.ffError)}</span>`
                 : "";
+            const thCls = (col) => {
+                if (this._sortCol !== col) return "";
+                return this._sortDir === "asc" ? "sort-asc" : "sort-desc";
+            };
             content.innerHTML = `
                 <div id="bh-status-line">
                     <button id="bh-refresh-btn" class="bh-btn-muted">Refresh now</button>
                     <span>Next refresh in <span id="bh-countdown">${nextIn}</span>s</span>
-                    <span>${m.length} match${m.length === 1 ? "" : "es"}</span>
+                    <span>${rows.length} match${rows.length === 1 ? "" : "es"}</span>
                     ${errLine}
                     ${ffKeyMissing}
                     ${ffError}
                 </div>
-                ${m.length === 0 ? `
+                ${rows.length === 0 ? `
                     <div class="bh-empty">
                         No bounties match your filters right now.<br>
                         <span style="color:#666">Adjust min price, FF range, or hospital window under Settings.</span>
@@ -1018,16 +1044,16 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <table class="bh-table">
                         <thead>
                             <tr>
-                                <th>Target</th>
-                                <th class="num">Reward</th>
-                                <th class="num">FF</th>
-                                <th>BS</th>
-                                <th>Status</th>
+                                <th data-sort="target" class="${thCls("target")}">Target</th>
+                                <th data-sort="reward" class="num ${thCls("reward")}">Reward</th>
+                                <th data-sort="ff" class="num ${thCls("ff")}">FF</th>
+                                <th data-sort="bs" class="num bh-col-divider ${thCls("bs")}">BS</th>
+                                <th data-sort="status" class="${thCls("status")}">Status</th>
                                 <th></th>
                             </tr>
                         </thead>
                         <tbody>
-                            ${m.map((row) => this._renderRow(row)).join("")}
+                            ${rows.map((row) => this._renderRow(row)).join("")}
                         </tbody>
                     </table>
                 `}
@@ -1044,6 +1070,55 @@ table.bh-table{width:100%;border-collapse:collapse}
                     const id = el.dataset.id;
                     openTornUrl(ATTACK_URL + id);
                 });
+            });
+            content.querySelectorAll("th[data-sort]").forEach((el) => {
+                el.addEventListener("click", () => {
+                    const col = el.dataset.sort;
+                    if (this._sortCol === col) {
+                        this._sortDir = this._sortDir === "asc" ? "desc" : "asc";
+                    } else {
+                        this._sortCol = col;
+                        // Numeric columns default to descending (biggest first),
+                        // text columns default to ascending (A–Z).
+                        this._sortDir = (col === "target") ? "asc" : "desc";
+                    }
+                    this._renderHunt();
+                });
+            });
+        }
+
+        _sortMatches(list) {
+            const col = this._sortCol;
+            const dir = this._sortDir === "asc" ? 1 : -1;
+            const statusRank = (m) => m.statusState === "Okay" ? 0 : 1;
+            const keyFor = (m) => {
+                switch (col) {
+                    case "target": return String(m.target_name || "").toLowerCase();
+                    case "reward": return m.reward || 0;
+                    case "ff":     return m.ff == null ? Number.POSITIVE_INFINITY : m.ff;
+                    case "bs":     return parseBS(m.bs) == null ? Number.POSITIVE_INFINITY : parseBS(m.bs);
+                    case "status": {
+                        // Okay first (desc) or last (asc); within Hospital, sort by time-remaining.
+                        const remain = m.statusState === "Hospital"
+                            ? Math.max(0, (m.hospUntil || 0) - Math.floor(Date.now() / 1000))
+                            : 0;
+                        return statusRank(m) * 1e6 + remain;
+                    }
+                    default: return m.reward || 0;
+                }
+            };
+            // "Infinity" keys (missing data) stay at the end regardless of dir,
+            // so the user isn't bombarded with blank cells on asc.
+            return [...list].sort((a, b) => {
+                const ka = keyFor(a); const kb = keyFor(b);
+                const aInf = ka === Number.POSITIVE_INFINITY;
+                const bInf = kb === Number.POSITIVE_INFINITY;
+                if (aInf && !bInf) return 1;
+                if (bInf && !aInf) return -1;
+                if (ka < kb) return -1 * dir;
+                if (ka > kb) return  1 * dir;
+                // Secondary: reward desc, keeps the big ones on top within ties.
+                return (b.reward || 0) - (a.reward || 0);
             });
         }
 
@@ -1063,7 +1138,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     </td>
                     <td class="num">${escHtml(fmt.moneyFull(b.reward))}</td>
                     <td class="num">${ffCell}</td>
-                    <td>${escHtml(b.bs || "—")}</td>
+                    <td class="num bh-col-divider">${escHtml(b.bs || "—")}</td>
                     <td><span class="bh-badge ${statusClass}"${hospAttr}>${statusText}</span></td>
                     <td><button class="bh-attack" data-id="${b.target_id}">Attack →</button></td>
                 </tr>
