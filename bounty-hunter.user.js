@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.0.9
+// @version      1.1.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.0.9";
+    const VERSION = "1.1.0";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -122,6 +122,14 @@
             const m = Math.floor(s / 60);
             const sec = s % 60;
             return m > 0 ? `${m}m ${sec}s`.replace(" 0s", "") : `${sec}s`;
+        },
+        hospLabel(untilSec) {
+            const rem = Math.max(0, untilSec - Math.floor(Date.now() / 1000));
+            if (rem <= 0) return "🏥 out";
+            const m = Math.floor(rem / 60);
+            const s = rem % 60;
+            if (m === 0) return `🏥 ${s}s`;
+            return `🏥 ${m}m ${s}s`;
         },
     };
 
@@ -476,9 +484,9 @@
                 const until = p.status.until || 0;
                 const remaining = Math.max(0, until - nowSec);
                 if (state === "Okay") {
-                    matches.push({ ...b, statusState: "Okay", hospRemaining: 0 });
+                    matches.push({ ...b, statusState: "Okay", hospUntil: 0 });
                 } else if (state === "Hospital" && remaining <= hospWindowSec) {
-                    matches.push({ ...b, statusState: "Hospital", hospRemaining: remaining });
+                    matches.push({ ...b, statusState: "Hospital", hospUntil: until });
                 }
             }
             matches.sort((a, b) => b.reward - a.reward);
@@ -504,8 +512,19 @@
             const stale = [];
             for (const id of ids) {
                 const c = this._statusCache.get(id);
-                if (c && now - c.fetchedAt < STATUS_CACHE_MS) out.set(id, c.data);
-                else stale.push(id);
+                if (c) {
+                    const d = c.data;
+                    // Hospital with a future `until` is effectively locked in —
+                    // the target can't leave hospital unless revived (rare).
+                    // Trust the cache until the timestamp passes.
+                    const hospLocked = d && d.status && d.status.state === "Hospital"
+                        && d.status.until && (d.status.until * 1000) > now;
+                    if (hospLocked || (now - c.fetchedAt < STATUS_CACHE_MS)) {
+                        out.set(id, d);
+                        continue;
+                    }
+                }
+                stale.push(id);
             }
             // Bounded concurrency — 3 in-flight at a time to stay friendly.
             let i = 0;
@@ -570,10 +589,10 @@
         _showOne(b) {
             const el = document.createElement("div");
             el.className = "bh-toast";
-            const statusLabel = b.statusState === "Hospital"
-                ? `🏥 ${Math.ceil((b.hospRemaining || 0) / 60)}m`
-                : "Okay";
-            const statusClass = b.statusState === "Hospital" ? "bh-badge-hosp" : "bh-badge-ok";
+            const isHosp = b.statusState === "Hospital";
+            const statusLabel = isHosp ? fmt.hospLabel(b.hospUntil) : "Okay";
+            const statusClass = isHosp ? "bh-badge-hosp" : "bh-badge-ok";
+            const hospAttr = isHosp ? ` data-hosp-until="${b.hospUntil}"` : "";
             el.innerHTML = `
                 <button class="bh-toast-close" title="Dismiss">&times;</button>
                 <div class="bh-toast-head">
@@ -583,7 +602,7 @@
                 <div class="bh-toast-meta">
                     <span class="bh-chip">FF ${b.ff == null ? "?" : b.ff.toFixed(2)}</span>
                     ${b.bs ? `<span class="bh-chip">BS ${escHtml(b.bs)}</span>` : ""}
-                    <span class="bh-chip ${statusClass}">${statusLabel}</span>
+                    <span class="bh-chip ${statusClass}"${hospAttr}>${statusLabel}</span>
                 </div>
                 <button class="bh-toast-attack">Attack →</button>
             `;
@@ -829,11 +848,19 @@ table.bh-table{width:100%;border-collapse:collapse}
             this.hunter.onUpdate = () => { if (this._isOpen()) this._renderActive(); };
             this.hunter.onToast = (bounties) => this.toaster.showMany(bounties);
 
-            // Countdown ticker.
+            // Countdown ticker — updates both the "next refresh in Xs" header
+            // and any live hospital-countdown badges (rows + toasts). Ticks
+            // every second; toasts live outside the panel so they tick too.
             this._countdownTimer = setInterval(() => {
-                if (!this._isOpen() || this.activeTab !== "hunt") return;
-                const el = document.getElementById("bh-countdown");
-                if (el) el.textContent = this.hunter.secondsUntilRefresh() + "s";
+                if (this._isOpen() && this.activeTab === "hunt") {
+                    const el = document.getElementById("bh-countdown");
+                    if (el) el.textContent = this.hunter.secondsUntilRefresh() + "s";
+                }
+                document.querySelectorAll("[data-hosp-until]").forEach((el) => {
+                    const until = parseInt(el.dataset.hospUntil, 10);
+                    if (!Number.isFinite(until)) return;
+                    el.textContent = fmt.hospLabel(until);
+                });
             }, 1000);
         }
 
@@ -995,9 +1022,8 @@ table.bh-table{width:100%;border-collapse:collapse}
 
         _renderRow(b) {
             const statusClass = b.statusState === "Hospital" ? "bh-badge-hosp" : "bh-badge-ok";
-            const statusText = b.statusState === "Hospital"
-                ? `🏥 ${Math.ceil((b.hospRemaining || 0) / 60)}m`
-                : "Okay";
+            const hospAttr = b.statusState === "Hospital" ? ` data-hosp-until="${b.hospUntil}"` : "";
+            const statusText = b.statusState === "Hospital" ? fmt.hospLabel(b.hospUntil) : "Okay";
             const ffCell = b.ff == null ? "—" : b.ff.toFixed(2);
             return `
                 <tr>
@@ -1008,7 +1034,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <td class="num">${escHtml(fmt.moneyFull(b.reward))}</td>
                     <td class="num">${ffCell}</td>
                     <td>${escHtml(b.bs || "—")}</td>
-                    <td><span class="bh-badge ${statusClass}">${statusText}</span></td>
+                    <td><span class="bh-badge ${statusClass}"${hospAttr}>${statusText}</span></td>
                     <td><button class="bh-attack" data-id="${b.target_id}">Attack →</button></td>
                 </tr>
             `;
