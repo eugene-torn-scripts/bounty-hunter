@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.0.6
+// @version      1.0.7
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.0.6";
+    const VERSION = "1.0.7";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -66,11 +66,6 @@
         minFF:    1.0,
         maxFF:    3.0,
         hospitalMaxMin: 5,
-        // Extra age buffer beyond Torn's automatic New Player Protection.
-        // NPP itself is non-configurable (14 days), applied by the filter
-        // based on our own age vs target's age. This setting only adds a
-        // conservative buffer on top; 0 = honour only Torn's rule.
-        minAccountAgeDaysBuffer: 0,
         refreshSec: 60,
         toastsEnabled: true,
         debug: false,
@@ -82,10 +77,8 @@
     //   - An NPP player CAN attack another NPP player, but not in the target's first 24 h.
     //   - (Edge case we ignore: faction-war participation lifts NPP temporarily.)
     const NPP_DAYS = 14;
-    function isAttackableByAge(targetAge, myAge, extraBufferDays) {
+    function isAttackableByAge(targetAge, myAge) {
         if (targetAge == null) return true; // unknown → don't drop, Torn will reject on attack if any
-        const buffer = Math.max(0, extraBufferDays | 0);
-        if (targetAge < buffer) return false;
         const meUnderNPP = (myAge != null) && (myAge < NPP_DAYS);
         if (meUnderNPP) {
             // Both under NPP → target must be past the 24-hour hard block.
@@ -470,7 +463,7 @@
                 const p = profiles.get(Number(b.target_id));
                 if (!p || !p.status) { counts.statusBreakdown["unknown"] = (counts.statusBreakdown["unknown"] || 0) + 1; continue; }
                 // Torn's NPP rule — depends on our own age too. See isAttackableByAge().
-                if (!isAttackableByAge(p.age, this.myUserAge, this.settings.minAccountAgeDaysBuffer)) {
+                if (!isAttackableByAge(p.age, this.myUserAge)) {
                     counts.tooNew++;
                     continue;
                 }
@@ -962,11 +955,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             // Show which NPP rule applies right now so the user understands the filter.
             let nppLabel = "";
             if (this.hunter.myUserAge != null) {
-                const buf = this.hunter.settings.minAccountAgeDaysBuffer;
-                const effective = Math.max(
-                    buf,
-                    this.hunter.myUserAge < 14 ? 1 : 14
-                );
+                const effective = this.hunter.myUserAge < 14 ? 1 : 14;
                 const youState = this.hunter.myUserAge < 14
                     ? `you are under NPP (age ${this.hunter.myUserAge}d)`
                     : `you are past NPP`;
@@ -1070,11 +1059,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <span class="bh-hint">0 = Okay only. ~5 lets you queue targets about to leave hospital.</span>
                         </div>
                         <div class="bh-field">
-                            <label>Extra age buffer (days)</label>
-                            <input id="bh-set-minage" class="bh-input" type="number" min="0" max="365" step="1" value="${s.minAccountAgeDaysBuffer}">
-                            <span class="bh-hint">Torn's 14-day New Player Protection is applied automatically based on your own age. This is an <b>extra</b> buffer on top (0 = honour only Torn's rule).</span>
-                        </div>
-                        <div class="bh-field">
                             <label>Fair-fight min</label>
                             <input id="bh-set-ffmin" class="bh-input" type="number" min="1" max="10" step="0.1" value="${s.minFF}">
                         </div>
@@ -1149,7 +1133,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                 this.hunter.updateSettings({
                     minPrice: Math.max(0, parseInt($("bh-set-price").value, 10) || 0),
                     hospitalMaxMin: Math.max(0, Math.min(60, parseInt($("bh-set-hosp").value, 10) || 0)),
-                    minAccountAgeDaysBuffer: Math.max(0, Math.min(365, parseInt($("bh-set-minage").value, 10) || 0)),
                     minFF: cleanMin,
                     maxFF: cleanMax,
                     refreshSec: parseInt($("bh-set-refresh").value, 10),
@@ -1163,7 +1146,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     this.hunter.stop();
                 }
             };
-            ["bh-set-price", "bh-set-hosp", "bh-set-minage", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-debug"]
+            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-debug"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
             if (!KeyResolver.isPDAKey()) {
