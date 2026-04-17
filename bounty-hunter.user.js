@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.0.7
+// @version      1.0.8
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.0.7";
+    const VERSION = "1.0.8";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -68,7 +68,6 @@
         hospitalMaxMin: 5,
         refreshSec: 60,
         toastsEnabled: true,
-        debug: false,
     };
 
     // Torn New Player Protection (https://wiki.torn.com/wiki/New_Player_Protection):
@@ -480,11 +479,6 @@
             matches.sort((a, b) => b.reward - a.reward);
             counts.matches = matches.length;
 
-            if (this.settings.debug) {
-                // eslint-disable-next-line no-console
-                console.log("[BH] refresh", counts, { sampleBounty: bounties[0], sampleFF: ff.map.size > 0 ? [...ff.map.entries()][0] : null });
-            }
-
             // 4) Diff for toasts.
             const currentIds = new Set(matches.map((m) => Number(m.target_id)));
             const newOnes = matches.filter((m) => !this.lastMatchIds.has(Number(m.target_id)));
@@ -876,7 +870,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <p class="bh-hint">Get one at <a class="bh-name-link" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">torn.com → Preferences → API Key</a>. "Public" access is sufficient.</p>
                     <div class="bh-field">
                         <label>Torn API key (16 chars)</label>
-                        <input id="bh-auth-key" class="bh-input" type="text" maxlength="16" spellcheck="false" autocomplete="off">
+                        <input id="bh-auth-key" class="bh-input" type="password" maxlength="16" spellcheck="false" autocomplete="off">
                     </div>
                     <div class="bh-auth-actions">
                         <button id="bh-auth-save" class="bh-btn bh-btn-primary">Save &amp; start</button>
@@ -889,7 +883,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <p class="bh-hint">Get one at <a class="bh-name-link" href="https://ffscouter.com" target="_blank" rel="noopener">ffscouter.com</a>. You can set this later under Settings.</p>
                     <div class="bh-field">
                         <label>FFScouter key (16 chars)</label>
-                        <input id="bh-auth-ffkey" class="bh-input" type="text" maxlength="16" spellcheck="false" autocomplete="off" value="${escHtml(KeyResolver.getFFKey())}">
+                        <input id="bh-auth-ffkey" class="bh-input" type="password" maxlength="16" spellcheck="false" autocomplete="off" value="${escHtml(KeyResolver.getFFKey())}">
                     </div>
                 </div>
             `;
@@ -1086,7 +1080,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                         <div class="bh-field">
                             <label>Notifications</label>
                             <label class="bh-check"><input type="checkbox" id="bh-set-toasts"${s.toastsEnabled ? " checked" : ""}> Show toast for new matches</label>
-                            <label class="bh-check"><input type="checkbox" id="bh-set-debug"${s.debug ? " checked" : ""}> Debug: log refresh pipeline to console</label>
                         </div>
                     </div>
                 </div>
@@ -1095,7 +1088,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <h3>Torn API key</h3>
                     ${pdaNote}
                     <div class="bh-field">
-                        <input id="bh-set-tornkey" class="bh-input" type="text" maxlength="16" spellcheck="false" autocomplete="off" value="${escHtml(tornKey)}" ${KeyResolver.isPDAKey() ? "disabled" : ""}>
+                        <input id="bh-set-tornkey" class="bh-input" type="password" maxlength="16" spellcheck="false" autocomplete="off" value="${escHtml(tornKey)}" ${KeyResolver.isPDAKey() ? "disabled" : ""}>
                     </div>
                     ${!KeyResolver.isPDAKey() ? `
                         <div class="bh-row-actions">
@@ -1109,7 +1102,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <h3>FFScouter key</h3>
                     <p class="bh-hint">Used to fetch fair-fight scores in bulk (one call per refresh).</p>
                     <div class="bh-field">
-                        <input id="bh-set-ffkey" class="bh-input" type="text" maxlength="16" spellcheck="false" autocomplete="off" value="${escHtml(KeyResolver.getFFKey())}">
+                        <input id="bh-set-ffkey" class="bh-input" type="password" maxlength="16" spellcheck="false" autocomplete="off" value="${escHtml(KeyResolver.getFFKey())}">
                     </div>
                     <div class="bh-row-actions">
                         <button id="bh-ffkey-save" class="bh-btn bh-btn-primary">Save FFScouter key</button>
@@ -1137,7 +1130,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                     maxFF: cleanMax,
                     refreshSec: parseInt($("bh-set-refresh").value, 10),
                     toastsEnabled: $("bh-set-toasts").checked,
-                    debug: $("bh-set-debug").checked,
                 });
                 if (this.hunter.settings.refreshSec > 0) {
                     this.hunter.stop();
@@ -1146,7 +1138,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     this.hunter.stop();
                 }
             };
-            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-debug"]
+            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
             if (!KeyResolver.isPDAKey()) {
