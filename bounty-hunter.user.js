@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.1.6
+// @version      1.1.7
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -46,7 +46,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.1.6";
+    const VERSION = "1.1.7";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -97,7 +97,13 @@
     }
 
     const TOAST_TIMEOUT_MS = 15_000;
-    const TOAST_MAX_VISIBLE = 5;
+    const TOAST_MAX_VISIBLE_DESKTOP = 3;
+    const TOAST_MAX_VISIBLE_MOBILE = 1;
+    const MOBILE_MEDIA = "(max-width: 768px)";
+    function toastMaxVisible() {
+        try { return window.matchMedia(MOBILE_MEDIA).matches ? TOAST_MAX_VISIBLE_MOBILE : TOAST_MAX_VISIBLE_DESKTOP; }
+        catch { return TOAST_MAX_VISIBLE_DESKTOP; }
+    }
     const STATUS_CACHE_MS = 20_000;
     const STATUS_CONCURRENCY = 3;
 
@@ -311,6 +317,26 @@
     // ════════════════════════════════════════════════════════════
     //  FFSCOUTER — bulk fair-fight lookup (up to 205 IDs/call)
     // ════════════════════════════════════════════════════════════
+
+    // Validates an FFScouter key via /check-key. Format-valid ≠ usable — the
+    // key must also be registered on FFScouter (get-stats otherwise returns
+    // code 6 and we silently filter everyone out). /check-key doesn't count
+    // against the caller's usage.
+    async function validateFFScouterKey(key) {
+        if (!/^[A-Za-z0-9]{16}$/.test(key)) {
+            return { ok: false, message: "Must be 16 alphanumeric characters." };
+        }
+        try {
+            const data = await httpGetJson(`${FF_BASE}/check-key?key=${encodeURIComponent(key)}`);
+            if (data && data.code) return { ok: false, message: data.error || `FFScouter code ${data.code}` };
+            if (!data || !data.is_registered) {
+                return { ok: false, message: "Key is not registered with FFScouter — sign up at ffscouter.com first." };
+            }
+            return { ok: true, message: data.is_premium ? "Valid — premium." : "Valid." };
+        } catch (e) {
+            return { ok: false, message: e && e.message ? e.message : "Could not reach FFScouter." };
+        }
+    }
 
     async function fetchFFScouterStats(key, userIds) {
         const result = { map: new Map(), error: null, nullCount: 0, totalReturned: 0 };
@@ -691,13 +717,17 @@
 
         showMany(bounties) {
             this.ensureContainer();
-            // How many fresh bounty cards will fit before we need a "+N more" card?
-            const existingBountyCards = this._cards.filter((c) => !c.isMore).length;
-            const slots = Math.max(0, TOAST_MAX_VISIBLE - existingBountyCards);
+            // Responsive cap — fewer alerts on phones where screen real estate
+            // is scarce; more on desktop. Clear-all / overflow cards don't
+            // count toward the bounty slot budget.
+            const maxVisible = toastMaxVisible();
+            const existingBountyCards = this._cards.filter((c) => !c.isMore && !c.isClearAll).length;
+            const slots = Math.max(0, maxVisible - existingBountyCards);
             const toShow = bounties.slice(0, slots);
             const overflow = bounties.length - toShow.length;
             for (const b of toShow) this._showOne(b);
             if (overflow > 0) this._showMoreCard(overflow);
+            this._updateClearAllCard();
         }
 
         _showOne(b) {
@@ -771,6 +801,30 @@
             this._cards.push(card);
         }
 
+        // A small "Clear all" header-card that appears when 2+ bounty toasts
+        // are on screen. Rendered last in DOM order so the reversed column
+        // flex layout puts it visually on top of the stack.
+        _updateClearAllCard() {
+            const bountyLikeCount = this._cards.filter((c) => !c.isClearAll).length;
+            const existing = this._cards.find((c) => c.isClearAll);
+            if (bountyLikeCount < 2) {
+                if (existing) this._remove(existing);
+                return;
+            }
+            if (existing) {
+                // Keep it at the visual top regardless of which toast was added last.
+                this.container.appendChild(existing.el);
+                return;
+            }
+            const el = document.createElement("div");
+            el.className = "bh-toast bh-toast-clear";
+            el.innerHTML = `<div class="bh-toast-clear-label">✕ Clear all</div>`;
+            const card = { id: null, el, timer: null, remaining: Infinity, enteredAt: 0, isMore: false, isClearAll: true };
+            el.addEventListener("click", (e) => { e.stopPropagation(); this.clearAll(); });
+            this.container.appendChild(el);
+            this._cards.push(card);
+        }
+
         _pauseTimer(card) {
             if (!card.timer) return;
             clearTimeout(card.timer);
@@ -788,6 +842,9 @@
             if (card.timer) clearTimeout(card.timer);
             if (card.el && card.el.parentNode) card.el.parentNode.removeChild(card.el);
             this._cards = this._cards.filter((c) => c !== card);
+            // If this was a bounty toast and there's now only one bounty card
+            // left, the Clear-all header should go away too.
+            if (!card.isClearAll) this._updateClearAllCard();
         }
 
         clearAll() {
@@ -874,6 +931,10 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .bh-check{display:inline-flex;align-items:center;gap:8px;cursor:pointer;color:#ccc}
 .bh-check input{accent-color:#ef5350}
+.bh-save-status{margin-top:8px;min-height:1em;font-size:12px}
+.bh-save-ok{color:#4caf50}
+.bh-save-err{color:#ef5350}
+.bh-save-info{color:#bbb}
 
 /* Auth screen */
 #bh-auth{padding:24px;color:#ddd;line-height:1.5}
@@ -906,6 +967,9 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-toast-more{border-left-color:#888;text-align:center}
 .bh-toast-more-label{color:#fff;font-weight:700;font-size:16px}
 .bh-toast-more-hint{color:#888;font-size:11px;margin-top:2px}
+.bh-toast-clear{border-left-color:#555;text-align:center;padding:6px 10px;background:#181818;cursor:pointer}
+.bh-toast-clear:hover{background:#222;border-left-color:#888}
+.bh-toast-clear-label{color:#aaa;font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase}
 
 @media(max-width:768px){
   #bh-panel{width:100vw!important;max-width:100vw;min-width:0;border-radius:0;top:0;left:0;
@@ -1292,6 +1356,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <button id="bh-key-save" class="bh-btn bh-btn-primary">Save Torn key</button>
                             <button id="bh-key-clear" class="bh-btn bh-btn-danger">Clear Torn key &amp; log out</button>
                         </div>
+                        <div id="bh-key-status" class="bh-save-status"></div>
                     ` : ""}
                 </div>
 
@@ -1305,6 +1370,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                         <button id="bh-ffkey-save" class="bh-btn bh-btn-primary">Save FFScouter key</button>
                         <button id="bh-ffkey-clear" class="bh-btn bh-btn-muted">Clear</button>
                     </div>
+                    <div id="bh-ffkey-status" class="bh-save-status"></div>
                 </div>
 
                 <div class="bh-section">
@@ -1339,17 +1405,35 @@ table.bh-table{width:100%;border-collapse:collapse}
             ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-unkff"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
+            const setStatus = (elId, kind, msg) => {
+                const el = $(elId);
+                if (!el) return;
+                el.className = "bh-save-status bh-save-" + kind;
+                el.textContent = msg;
+            };
+
             if (!KeyResolver.isPDAKey()) {
                 $("bh-key-save").addEventListener("click", async () => {
                     const k = $("bh-set-tornkey").value.trim();
-                    if (!/^[A-Za-z0-9]{16}$/.test(k)) { alert("Torn key must be 16 alphanumeric characters."); return; }
+                    if (!/^[A-Za-z0-9]{16}$/.test(k)) {
+                        setStatus("bh-key-status", "err", "Torn key must be 16 alphanumeric characters.");
+                        return;
+                    }
+                    setStatus("bh-key-status", "info", "Validating…");
                     this.hunter.api.setKey(k);
                     try {
                         await this.hunter.api.validateKey();
-                    } catch (e) { alert("Key rejected: " + (e.message || "invalid")); return; }
+                    } catch (e) {
+                        setStatus("bh-key-status", "err", "Key rejected: " + (e.message || "invalid"));
+                        return;
+                    }
                     KeyResolver.saveTornKey(k);
-                    this.hunter.myUserId = null; // re-resolve on next refresh
+                    this.hunter.myUserId = null;
+                    this.hunter.myUserLevel = null;
+                    this.hunter.myUserAge = null;
+                    setStatus("bh-key-status", "ok", "Saved. Refreshing matches…");
                     await this.hunter.refresh().catch(() => {});
+                    setStatus("bh-key-status", "ok", "Saved ✓");
                 });
                 $("bh-key-clear").addEventListener("click", () => {
                     if (!confirm("Clear the Torn API key and return to the auth screen?")) return;
@@ -1359,15 +1443,36 @@ table.bh-table{width:100%;border-collapse:collapse}
                     this.setAuthed(false);
                 });
             }
-            $("bh-ffkey-save").addEventListener("click", () => {
+            $("bh-ffkey-save").addEventListener("click", async () => {
                 const k = $("bh-set-ffkey").value.trim();
-                if (k && !/^[A-Za-z0-9]{16}$/.test(k)) { alert("FFScouter key must be 16 alphanumeric characters."); return; }
-                if (k) KeyResolver.saveFFKey(k); else KeyResolver.clearFFKey();
-                this.hunter.refresh().catch(() => {});
+                if (!k) {
+                    KeyResolver.clearFFKey();
+                    setStatus("bh-ffkey-status", "info", "Cleared.");
+                    // Drop stale error so Hunt tab doesn't display a ghost message.
+                    if (this.hunter.lastCounts) this.hunter.lastCounts.ffError = null;
+                    this.hunter.refresh().catch(() => {});
+                    return;
+                }
+                setStatus("bh-ffkey-status", "info", "Validating with FFScouter…");
+                const result = await validateFFScouterKey(k);
+                if (!result.ok) {
+                    setStatus("bh-ffkey-status", "err", result.message);
+                    return;
+                }
+                KeyResolver.saveFFKey(k);
+                // Clear any "no_key" / "Invalid API key" error left over from the
+                // previous refresh, so tab-switching to Hunt before the new
+                // refresh lands doesn't show a ghost FFScouter error.
+                if (this.hunter.lastCounts) this.hunter.lastCounts.ffError = null;
+                setStatus("bh-ffkey-status", "ok", result.message + " Refreshing matches…");
+                await this.hunter.refresh().catch(() => {});
+                setStatus("bh-ffkey-status", "ok", result.message + " Saved ✓");
             });
             $("bh-ffkey-clear").addEventListener("click", () => {
                 KeyResolver.clearFFKey();
                 $("bh-set-ffkey").value = "";
+                if (this.hunter.lastCounts) this.hunter.lastCounts.ffError = null;
+                setStatus("bh-ffkey-status", "info", "Cleared.");
                 this.hunter.refresh().catch(() => {});
             });
             $("bh-reset").addEventListener("click", () => {
