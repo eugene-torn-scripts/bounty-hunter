@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.1.2
+// @version      1.1.3
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.1.2";
+    const VERSION = "1.1.3";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -870,7 +870,13 @@ table.bh-table{width:100%;border-collapse:collapse}
             panel.id = "bh-panel";
             panel.innerHTML = `
                 <div id="bh-header">
-                    <h2>Bounty Hunter <span class="bh-ver">v${VERSION}</span></h2>
+                    <h2>Bounty Hunter <span class="bh-ver">v${VERSION}</span>
+                        <span style="color:#888;font-size:11px;font-weight:400;margin-left:10px">
+                            Like the script? Send a Xanax to
+                            <a href="https://www.torn.com/profiles.php?XID=4192025" target="_blank"
+                               style="color:#cc3333;text-decoration:none">eugene_s [4192025]</a>
+                        </span>
+                    </h2>
                     <button id="bh-close">&times;</button>
                 </div>
                 <div id="bh-tabs">
