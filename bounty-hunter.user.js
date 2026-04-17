@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.1.8
+// @version      1.2.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -46,12 +46,13 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.1.8";
+    const VERSION = "1.2.0";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
         settings: "bh_settings",
         shared:   "bh_shared",   // cross-tab: last refresh result (matches + metadata)
+        debug:    "bh_debug",    // "1" when the debug log is on; undefined/"" otherwise
     };
     // When shared data is younger than (refreshSec * SHARED_FRESH_RATIO) ms,
     // a tab skips its own refresh and free-rides on the writer's result.
@@ -59,6 +60,51 @@
     // together — we'd rather free-ride than double-fetch.
     const SHARED_FRESH_RATIO = 0.8;
     const SPA_LS_APIKEY = "spa_apiKey"; // reuse SPA's key on desktop if present
+
+    // ════════════════════════════════════════════════════════════
+    //  DEBUG LOG — opt-in ring buffer surfaced in the Settings tab.
+    //  Goal: let the user SEE requests firing and rate-limit hits
+    //  in real time without opening devtools.
+    // ════════════════════════════════════════════════════════════
+
+    const debugLog = [];
+    const MAX_DEBUG_LOG = 150;
+    // Cheap pub-sub so the Settings tab can re-render the log as new
+    // entries land. document is always present before the IIFE runs.
+    const debugBus = document.createElement("div");
+
+    function isDebugOn() {
+        try { return localStorage.getItem(LS.debug) === "1"; } catch { return false; }
+    }
+
+    // Strip host noise and redact the `key=` query param so Torn/FFScouter
+    // API keys never end up in a log the user might screenshot or paste.
+    function redactUrl(url) {
+        try {
+            const u = new URL(url);
+            const params = new URLSearchParams(u.search);
+            for (const k of ["key", "apikey"]) {
+                if (params.has(k)) params.set(k, "***");
+            }
+            const q = params.toString();
+            return `${u.host}${u.pathname}${q ? "?" + q : ""}`;
+        } catch {
+            return url;
+        }
+    }
+
+    // `level` is one of "info" | "ok" | "warn" | "err" — drives the row colour.
+    function logDebug(label, level = "info", ms = null) {
+        if (!isDebugOn()) return;
+        debugLog.push({
+            ts: new Date().toISOString().slice(11, 19),
+            label,
+            level,
+            ms: (typeof ms === "number") ? Math.round(ms) : null,
+        });
+        if (debugLog.length > MAX_DEBUG_LOG) debugLog.shift();
+        debugBus.dispatchEvent(new CustomEvent("entry"));
+    }
 
     const API_BASE = "https://api.torn.com/v2";
     const FF_BASE  = "https://ffscouter.com/api/v1";
@@ -209,7 +255,7 @@
         });
     }
 
-    async function _httpGetOnce(url) {
+    async function _httpGetOnceRaw(url) {
         if (IS_PDA) {
             const res = await PDA_httpGet(url);
             if (res.status < 200 || res.status >= 300) {
@@ -240,14 +286,55 @@
         return res.json();
     }
 
+    // Debug-logging wrapper around the raw HTTP call. Records status + ms
+    // for every request so the user can watch traffic in real time.
+    async function _httpGetOnce(url) {
+        const started = performance.now();
+        const redacted = redactUrl(url);
+        try {
+            const data = await _httpGetOnceRaw(url);
+            const ms = performance.now() - started;
+            // Torn returns 200 OK with { error: { code: 5, error: "Too many requests" } }
+            // on rate limit. Surface that in the log even though the HTTP layer saw 200.
+            const tornCode = data && data.error && data.error.code;
+            if (tornCode === 5) {
+                logDebug(`GET ${redacted} → 200 · Torn rate limit (code 5)`, "err", ms);
+            } else if (tornCode) {
+                logDebug(`GET ${redacted} → 200 · Torn code ${tornCode}`, "warn", ms);
+            } else {
+                logDebug(`GET ${redacted} → 200`, "ok", ms);
+            }
+            return data;
+        } catch (err) {
+            const ms = performance.now() - started;
+            const status = err.status || "ERR";
+            const level = (status === 429) ? "err" : "warn";
+            const tag = (status === 429) ? " · rate limit" : "";
+            logDebug(`GET ${redacted} → ${status}${tag}`, level, ms);
+            throw err;
+        }
+    }
+
     // One retry for transient / PDA-flaky failures. Real HTTP errors fall through.
     async function httpGetJson(url) {
         try { return await _httpGetOnce(url); }
         catch (err) {
             if (err.status >= 400 && err.status < 500) throw err;
+            logDebug(`retry after network/5xx error`, "warn");
             await sleep(400);
             return _httpGetOnce(url);
         }
+    }
+
+    // Rate-limit signal for both Torn (JSON envelope error.code=5) and
+    // FFScouter/HTTP layer (status 429). When true, the caller should abort
+    // the whole refresh cycle so prior matches stay on screen instead of
+    // being overwritten with a partial/empty set.
+    function isRateLimitError(err) {
+        if (!err) return false;
+        if (err.status === 429) return true;
+        if (err.tornCode === 5) return true;
+        return false;
     }
 
     // ════════════════════════════════════════════════════════════
@@ -360,6 +447,9 @@
                     });
                 }
             } catch (e) {
+                // Rate-limit aborts the cycle so prior matches stay visible —
+                // partial FFScouter data would otherwise filter good targets out.
+                if (isRateLimitError(e)) throw e;
                 // Surface the first error but keep processing other chunks.
                 if (!result.error) result.error = e.message || "network_error";
             }
@@ -510,6 +600,7 @@
                 const fresh = shared
                     && (Date.now() - shared.writtenAt) < (this.settings.refreshSec * 1000 * SHARED_FRESH_RATIO);
                 if (fresh) {
+                    logDebug(`free-ride: reusing fresh result from another tab (${shared.matches ? shared.matches.length : 0} matches)`, "info");
                     this._adoptSharedIdentity(shared);
                     this.lastCounts = shared.lastCounts || null;
                     this.lastError = null;
@@ -521,6 +612,11 @@
                 }
             } catch (err) {
                 this.lastError = err;
+                if (isRateLimitError(err)) {
+                    logDebug(`refresh aborted — rate limit; keeping ${this.lastMatches.length} prior matches on screen`, "err");
+                } else {
+                    logDebug(`refresh failed: ${err.message || "error"}`, "err");
+                }
                 if (this.onUpdate) this.onUpdate();
                 // Back off briefly on errors; leave auto-refresh alive.
                 waitSec = Math.max(this.settings.refreshSec, 30);
@@ -532,6 +628,8 @@
 
         async refresh() {
             this.lastError = null;
+            const refreshStart = performance.now();
+            logDebug(`refresh: start`, "info");
             if (this.onUpdate) this.onUpdate({ loading: true });
 
             // Resolve our ID, level, and age once. Age feeds the NPP rule
@@ -548,6 +646,7 @@
             }
 
             const { bounties, delaySec } = await this.api.fetchAllBounties();
+            logDebug(`fetched ${bounties.length} bounties (cache delay ${delaySec || 0}s)`, "ok");
 
             // Collapse multiple bounty rows on the same target + same reward
             // into one entry with an aggregated count. Rows with different
@@ -587,10 +686,12 @@
             // 2) Bulk FFScouter — keep only rows with a known FF in range.
             const ffKey = KeyResolver.getFFKey();
             const ids = [...new Set(byBasic.map((b) => Number(b.target_id)))];
+            logDebug(`FFScouter: requesting ${ids.length} IDs`, "info");
             const ff = await fetchFFScouterStats(ffKey, ids);
             counts.withFF = ff.map.size;
             counts.ffNull = ff.nullCount;
             counts.ffError = ff.error;
+            logDebug(`FFScouter: ${ff.map.size} with FF, ${ff.nullCount} null${ff.error ? `, error: ${ff.error}` : ""}`, ff.error ? "warn" : "ok");
             const includeUnknown = !!this.settings.includeUnknownFF;
             const byFF = byBasic
                 .map((b) => {
@@ -610,6 +711,7 @@
             // 3) Per-target profile — status, age, faction.
             const nowSec = Math.floor(Date.now() / 1000);
             const hospWindowSec = this.settings.hospitalMaxMin * 60;
+            logDebug(`profiles: need ${byFF.length} (cache will absorb recent lookups)`, "info");
             const profiles = await this._fetchProfiles(byFF.map((b) => Number(b.target_id)));
             const matches = [];
             counts.tooNew = 0;
@@ -638,6 +740,7 @@
             this.lastCounts = counts;
             this._applyMatches(matches);
             this._writeShared();
+            logDebug(`refresh: done — ${matches.length} matches (of ${counts.total} bounties)`, "ok", performance.now() - refreshStart);
             if (this.onUpdate) this.onUpdate({ loading: false });
             return delaySec;
         }
@@ -668,8 +771,9 @@
             }
             // Bounded concurrency — 3 in-flight at a time to stay friendly.
             let i = 0;
+            let rateLimitErr = null;
             const workers = Array.from({ length: STATUS_CONCURRENCY }, async () => {
-                while (i < stale.length) {
+                while (i < stale.length && !rateLimitErr) {
                     const id = stale[i++];
                     try {
                         const profile = await this.api.fetchUserProfile(id);
@@ -682,12 +786,16 @@
                             out.set(id, data);
                             this._statusCache.set(id, { data, fetchedAt: Date.now() });
                         }
-                    } catch {
-                        // Swallow per-target errors — the row just won't match this cycle.
+                    } catch (err) {
+                        // Rate-limit: stop all workers and bubble up so the
+                        // cycle aborts and prior matches stay on screen.
+                        if (isRateLimitError(err)) { rateLimitErr = err; return; }
+                        // Other per-target errors: row just won't match this cycle.
                     }
                 }
             });
             await Promise.all(workers);
+            if (rateLimitErr) throw rateLimitErr;
             return out;
         }
 
@@ -877,12 +985,12 @@
 #bh-panel ::-webkit-scrollbar-thumb{background:#444;border-radius:3px}
 #bh-panel ::-webkit-scrollbar-thumb:hover{background:#555}
 #bh-header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;
-  background:#222;border-bottom:1px solid #444}
+  background:#222;border-bottom:1px solid #444;flex-shrink:0}
 #bh-header h2{margin:0;font-size:17px;color:#fff}
 #bh-header .bh-ver{color:#666;font-size:12px;margin-left:8px}
 #bh-close{background:none;border:none;color:#999;font-size:22px;cursor:pointer;padding:4px 8px}
 #bh-close:hover{color:#fff}
-#bh-tabs{display:flex;background:#252525;border-bottom:1px solid #444;overflow-x:auto}
+#bh-tabs{display:flex;background:#252525;border-bottom:1px solid #444;overflow-x:auto;flex-shrink:0}
 .bh-tab{padding:10px 20px;cursor:pointer;color:#999!important;border-bottom:2px solid transparent;
   white-space:nowrap;font-size:14px;transition:all .15s}
 .bh-tab:hover{color:#ccc!important;background:#2a2a2a}
@@ -890,6 +998,12 @@
 #bh-content{padding:16px;overflow-y:auto;flex:1;min-height:0}
 #bh-status-line{display:flex;gap:12px;align-items:center;margin-bottom:12px;color:#888;font-size:12px;flex-wrap:wrap}
 #bh-status-line .bh-err{color:#ef5350}
+.bh-rl-banner{background:#2a1414;border:1px solid #ef5350;border-left:4px solid #ef5350;border-radius:4px;padding:10px 14px;margin:0 0 12px;color:#ddd;font-size:13px}
+.bh-rl-title{color:#ef5350;font-weight:700;font-size:13px;margin-bottom:6px}
+.bh-rl-body{color:#ccc;line-height:1.45;font-size:12px}
+.bh-rl-tips{margin:6px 0 6px 20px;padding:0;color:#ddd}
+.bh-rl-tips li{margin:2px 0}
+.bh-rl-hint{color:#888;font-size:11px;font-style:italic}
 #bh-refresh-btn{padding:4px 10px;background:#333;border:1px solid #444;color:#ddd;border-radius:4px;cursor:pointer;font-size:12px}
 #bh-refresh-btn:hover{background:#3a3a3a}
 #bh-refresh-btn:disabled{opacity:.5;cursor:not-allowed}
@@ -926,6 +1040,11 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
 .bh-field label{color:#bbb;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
 .bh-input,.bh-select{background:#252525;border:1px solid #444;color:#ddd;padding:6px 10px;border-radius:4px;font-size:14px;width:100%}
+/* Visual masking for API-key inputs. We intentionally avoid type="password"
+   because Chrome/Safari then prompt to save the value as a login credential
+   and password managers inject auto-fill UI on top. CSS masking gives the
+   bullet-dot look without the browser treating the field as a login. */
+.bh-input-masked{-webkit-text-security:disc;text-security:disc;font-family:monospace;letter-spacing:2px}
 .bh-btn{padding:7px 14px;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600;color:#ddd}
 .bh-btn-primary{background:#4fc3f7;color:#111!important}.bh-btn-primary:hover{background:#29b6f6}
 .bh-btn-danger{background:#ef5350;color:#fff!important}.bh-btn-danger:hover{background:#f44336}
@@ -938,6 +1057,15 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-save-ok{color:#4caf50}
 .bh-save-err{color:#ef5350}
 .bh-save-info{color:#bbb}
+.bh-debug-log{margin-top:8px;max-height:220px;overflow-y:auto;background:#111;border:1px solid #333;border-radius:4px;padding:6px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.5}
+.bh-debug-hint{color:#666;font-size:11px}
+.bh-debug-row{padding:1px 0;color:#aaa;word-break:break-all}
+.bh-debug-ts{color:#666;margin-right:4px}
+.bh-debug-ms{color:#4caf50;margin-left:4px}
+.bh-debug-ok{color:#aaa}
+.bh-debug-info{color:#bbb}
+.bh-debug-warn{color:#ffb74d}
+.bh-debug-err{color:#ef5350}
 
 /* Auth screen */
 #bh-auth{padding:24px;color:#ddd;line-height:1.5}
@@ -1101,7 +1229,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <p class="bh-hint">Get one at <a class="bh-name-link" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">torn.com → Preferences → API Key</a>. "Public" access is sufficient.</p>
                     <div class="bh-field">
                         <label>Torn API key (16 chars)</label>
-                        <input id="bh-auth-key" class="bh-input" type="password" maxlength="16" spellcheck="false" autocomplete="off">
+                        <input id="bh-auth-key" class="bh-input bh-input-masked" type="text" maxlength="16" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore="true" data-form-type="other">
                     </div>
                     <div class="bh-auth-actions">
                         <button id="bh-auth-save" class="bh-btn bh-btn-primary">Save &amp; start</button>
@@ -1114,7 +1242,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <p class="bh-hint">Get one at <a class="bh-name-link" href="https://ffscouter.com" target="_blank" rel="noopener">ffscouter.com</a>. You can set this later under Settings.</p>
                     <div class="bh-field">
                         <label>FFScouter key (16 chars)</label>
-                        <input id="bh-auth-ffkey" class="bh-input" type="password" maxlength="16" spellcheck="false" autocomplete="off" value="${escHtml(KeyResolver.getFFKey())}">
+                        <input id="bh-auth-ffkey" class="bh-input bh-input-masked" type="text" maxlength="16" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore="true" data-form-type="other" value="${escHtml(KeyResolver.getFFKey())}">
                     </div>
                 </div>
             `;
@@ -1165,7 +1293,10 @@ table.bh-table{width:100%;border-collapse:collapse}
             const rows = this._sortMatches(this.hunter.lastMatches);
             const c = this.hunter.lastCounts;
             const nextIn = this.hunter.secondsUntilRefresh();
-            const errLine = this.hunter.lastError
+            const rateLimited = isRateLimitError(this.hunter.lastError);
+            // Only show the generic error line when it isn't a rate-limit —
+            // the rate-limit case gets its own banner below with actionable copy.
+            const errLine = (this.hunter.lastError && !rateLimited)
                 ? `<span class="bh-err">${escHtml(this.hunter.lastError.message || "error")}</span>`
                 : "";
             const ffKeyMissing = !KeyResolver.getFFKey() && !this.hunter.settings.includeUnknownFF
@@ -1178,6 +1309,29 @@ table.bh-table{width:100%;border-collapse:collapse}
                 if (this._sortCol !== col) return "";
                 return this._sortDir === "asc" ? "sort-asc" : "sort-desc";
             };
+            // Rate-limit banner — prominent, actionable. We keep showing the
+            // prior cycle's matches below so the user still has something to
+            // work with while the back-off runs.
+            const rateLimitBanner = rateLimited
+                ? `
+                    <div class="bh-rl-banner">
+                        <div class="bh-rl-title">Rate limit hit — showing previous results</div>
+                        <div class="bh-rl-body">
+                            Torn / FFScouter returned a rate-limit response while processing ${c && c.total != null ? c.total + " " : ""}bounties.
+                            The table below is from the last successful refresh and may be slightly stale.
+                            <br><br>
+                            <b>To reduce API load, tighten your filters so fewer targets need a per-profile lookup:</b>
+                            <ul class="bh-rl-tips">
+                                <li>Raise <b>Min reward</b> (e.g. $1M+) — skips low-value bounties.</li>
+                                <li>Narrow <b>Fair-fight</b> range — excludes targets outside your combat bracket.</li>
+                                <li>Lower <b>Hospital max</b> — skips long-hospital targets that aren't actionable.</li>
+                                <li>Increase <b>Auto-refresh</b> interval (e.g. 2 min+) — spreads calls over time.</li>
+                            </ul>
+                            <span class="bh-rl-hint">Auto-retry will continue in the background.</span>
+                        </div>
+                    </div>
+                `
+                : "";
             content.innerHTML = `
                 <div id="bh-status-line">
                     <button id="bh-refresh-btn" class="bh-btn-muted">Refresh now</button>
@@ -1187,6 +1341,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     ${ffKeyMissing}
                     ${ffError}
                 </div>
+                ${rateLimitBanner}
                 ${rows.length === 0 ? `
                     <div class="bh-empty">
                         No bounties match your filters right now.<br>
@@ -1354,7 +1509,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <h3>Torn API key</h3>
                     ${pdaNote}
                     <div class="bh-field">
-                        <input id="bh-set-tornkey" class="bh-input" type="password" maxlength="16" spellcheck="false" autocomplete="off" value="${escHtml(tornKey)}" ${KeyResolver.isPDAKey() ? "disabled" : ""}>
+                        <input id="bh-set-tornkey" class="bh-input bh-input-masked" type="text" maxlength="16" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore="true" data-form-type="other" value="${escHtml(tornKey)}" ${KeyResolver.isPDAKey() ? "disabled" : ""}>
                     </div>
                     ${!KeyResolver.isPDAKey() ? `
                         <div class="bh-row-actions">
@@ -1369,13 +1524,25 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <h3>FFScouter key</h3>
                     <p class="bh-hint">Used to fetch fair-fight scores in bulk (one call per refresh).</p>
                     <div class="bh-field">
-                        <input id="bh-set-ffkey" class="bh-input" type="password" maxlength="16" spellcheck="false" autocomplete="off" value="${escHtml(KeyResolver.getFFKey())}">
+                        <input id="bh-set-ffkey" class="bh-input bh-input-masked" type="text" maxlength="16" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore="true" data-form-type="other" value="${escHtml(KeyResolver.getFFKey())}">
                     </div>
                     <div class="bh-row-actions">
                         <button id="bh-ffkey-save" class="bh-btn bh-btn-primary">Save FFScouter key</button>
                         <button id="bh-ffkey-clear" class="bh-btn bh-btn-muted">Clear</button>
                     </div>
                     <div id="bh-ffkey-status" class="bh-save-status"></div>
+                </div>
+
+                <div class="bh-section">
+                    <h3>Debug log</h3>
+                    <label class="bh-check">
+                        <input type="checkbox" id="bh-set-debug"${isDebugOn() ? " checked" : ""}> Record API requests &amp; rate-limit hits
+                    </label>
+                    <p class="bh-hint">When on, every Torn / FFScouter request is logged below with its status and latency. Rate-limit hits (Torn code 5, HTTP 429) are highlighted. Use this to confirm whether a slow refresh is rate-limited or just the network.</p>
+                    <div id="bh-debug-log" class="bh-debug-log"></div>
+                    <div class="bh-row-actions" style="margin-top:6px">
+                        <button id="bh-debug-clear" class="bh-btn bh-btn-muted">Clear log</button>
+                    </div>
                 </div>
 
                 <div class="bh-section">
@@ -1485,6 +1652,47 @@ table.bh-table{width:100%;border-collapse:collapse}
                 this.hunter.updateSettings({ ...DEFAULT_SETTINGS, toastsEnabled: this.hunter.settings.toastsEnabled });
                 this._renderActive();
             });
+
+            // Debug log section — checkbox persists, log area updates live.
+            const debugToggle = $("bh-set-debug");
+            const debugEl = $("bh-debug-log");
+            const renderLog = () => {
+                if (!debugEl.isConnected) return;
+                if (!isDebugOn()) {
+                    debugEl.innerHTML = `<span class="bh-debug-hint">Debug is off. Enable it to start recording.</span>`;
+                    return;
+                }
+                if (debugLog.length === 0) {
+                    debugEl.innerHTML = `<span class="bh-debug-hint">No events yet — trigger a refresh from the Hunt tab.</span>`;
+                    return;
+                }
+                const rows = [...debugLog].reverse().map((r) => {
+                    const msPart = (r.ms != null) ? ` <span class="bh-debug-ms">${r.ms}ms</span>` : "";
+                    return `<div class="bh-debug-row bh-debug-${r.level}"><span class="bh-debug-ts">${r.ts}</span> ${escHtml(r.label)}${msPart}</div>`;
+                }).join("");
+                debugEl.innerHTML = rows;
+            };
+            debugToggle.addEventListener("change", () => {
+                try { localStorage.setItem(LS.debug, debugToggle.checked ? "1" : ""); } catch {}
+                if (!debugToggle.checked) debugLog.length = 0;
+                renderLog();
+            });
+            $("bh-debug-clear").addEventListener("click", () => {
+                debugLog.length = 0;
+                renderLog();
+            });
+            // Live updates: subscribe once per render, and clean up when the
+            // node goes away (next settings re-render replaces the container).
+            const onEntry = () => renderLog();
+            debugBus.addEventListener("entry", onEntry);
+            const detach = new MutationObserver(() => {
+                if (!debugEl.isConnected) {
+                    debugBus.removeEventListener("entry", onEntry);
+                    detach.disconnect();
+                }
+            });
+            detach.observe(this._panel, { childList: true, subtree: true });
+            renderLog();
         }
     }
 
