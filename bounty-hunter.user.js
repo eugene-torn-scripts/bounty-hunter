@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.0.4
+// @version      1.0.5
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -44,7 +44,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.0.4";
+    const VERSION = "1.0.5";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -66,20 +66,11 @@
         minFF:    1.0,
         maxFF:    3.0,
         hospitalMaxMin: 5,
+        minAccountAgeDays: 14,   // Torn new-player protection — empirically, fresh (<~14d) accounts are unattackable
         refreshSec: 60,
         toastsEnabled: true,
         debug: false,
     };
-
-    // Torn's noob-island rule: targets below L15 can only be attacked by
-    // players within ±5 levels. Targets L15+ are attackable by anyone above L15.
-    const NOOB_ISLAND_CAP = 15;
-    const NOOB_LEVEL_GAP  = 5;
-    function isAttackableByLevel(targetLevel, myLevel) {
-        if (targetLevel >= NOOB_ISLAND_CAP) return true;
-        if (myLevel == null) return true; // don't filter until we know our own level
-        return Math.abs(targetLevel - myLevel) <= NOOB_LEVEL_GAP;
-    }
 
     const TOAST_TIMEOUT_MS = 15_000;
     const TOAST_MAX_VISIBLE = 5;
@@ -256,8 +247,10 @@
             return { bounties: all, delaySec: delay };
         }
 
-        async fetchUserBasic(id) {
-            const data = await this._get(`/user/${id}/basic`);
+        async fetchUserProfile(id) {
+            // /profile includes status + age + level + faction_id in one call,
+            // which we need to filter out Torn's new-account protection window.
+            const data = await this._get(`/user/${id}/profile`);
             return data.profile || null;
         }
 
@@ -413,13 +406,11 @@
                 matches: 0,
             };
 
-            // 1) Attackability + price + self filter.
-            // Torn's noob-island rule: level<15 targets can only be attacked by
-            // players within ±5 levels. Apply that rule using our own level so
-            // the filter is correct for every hunter, not just high-level ones.
+            // 1) Price + self filter. Age-based "new-account" filter happens
+            // later (in step 3) since target age requires a per-user profile
+            // fetch anyway.
             const byBasic = bounties.filter((b) =>
-                isAttackableByLevel(b.target_level, this.myUserLevel)
-                && b.reward >= this.settings.minPrice
+                b.reward >= this.settings.minPrice
                 && (this.myUserId == null || b.target_id !== this.myUserId)
             );
             counts.afterBasic = byBasic.length;
@@ -443,17 +434,22 @@
                 );
             counts.afterFF = byFF.length;
 
-            // 3) Per-target status — Okay, or Hospital within the user-set window.
+            // 3) Per-target profile — status, account age, faction.
             const nowSec = Math.floor(Date.now() / 1000);
             const hospWindowSec = this.settings.hospitalMaxMin * 60;
-            const statuses = await this._fetchStatuses(byFF.map((b) => Number(b.target_id)));
+            const minAge = this.settings.minAccountAgeDays;
+            const profiles = await this._fetchProfiles(byFF.map((b) => Number(b.target_id)));
             const matches = [];
+            counts.tooNew = 0;
             for (const b of byFF) {
-                const s = statuses.get(Number(b.target_id));
-                if (!s) { counts.statusBreakdown["unknown"] = (counts.statusBreakdown["unknown"] || 0) + 1; continue; }
-                const state = s.state;
+                const p = profiles.get(Number(b.target_id));
+                if (!p || !p.status) { counts.statusBreakdown["unknown"] = (counts.statusBreakdown["unknown"] || 0) + 1; continue; }
+                // Torn's new-account protection — fresh accounts are unattackable
+                // regardless of level. Empirically, the threshold is ~14 days.
+                if (p.age != null && p.age < minAge) { counts.tooNew++; continue; }
+                const state = p.status.state;
                 counts.statusBreakdown[state] = (counts.statusBreakdown[state] || 0) + 1;
-                const until = s.until || 0;
+                const until = p.status.until || 0;
                 const remaining = Math.max(0, until - nowSec);
                 if (state === "Okay") {
                     matches.push({ ...b, statusState: "Okay", hospRemaining: 0 });
@@ -483,13 +479,13 @@
             return delaySec;
         }
 
-        async _fetchStatuses(ids) {
+        async _fetchProfiles(ids) {
             const out = new Map();
             const now = Date.now();
             const stale = [];
             for (const id of ids) {
                 const c = this._statusCache.get(id);
-                if (c && now - c.fetchedAt < STATUS_CACHE_MS) out.set(id, c.status);
+                if (c && now - c.fetchedAt < STATUS_CACHE_MS) out.set(id, c.data);
                 else stale.push(id);
             }
             // Bounded concurrency — 3 in-flight at a time to stay friendly.
@@ -498,11 +494,15 @@
                 while (i < stale.length) {
                     const id = stale[i++];
                     try {
-                        const profile = await this.api.fetchUserBasic(id);
-                        const s = profile && profile.status ? profile.status : null;
-                        if (s) {
-                            out.set(id, s);
-                            this._statusCache.set(id, { status: s, fetchedAt: Date.now() });
+                        const profile = await this.api.fetchUserProfile(id);
+                        if (profile) {
+                            const data = {
+                                status: profile.status || null,
+                                age: typeof profile.age === "number" ? profile.age : null,
+                                faction_id: profile.faction_id || null,
+                            };
+                            out.set(id, data);
+                            this._statusCache.set(id, { data, fetchedAt: Date.now() });
                         }
                     } catch {
                         // Swallow per-target errors — the row just won't match this cycle.
@@ -931,16 +931,14 @@ table.bh-table{width:100%;border-collapse:collapse}
                 : "";
             // Pipeline counts expose where filtering is happening so 0-match
             // cases are diagnosable at a glance.
-            const levelHint = this.hunter.myUserLevel != null
-                ? `attackable (L≥15 or ±5 of L${this.hunter.myUserLevel})`
-                : "attackable";
+            const tooNewHint = c && c.tooNew ? ` <span class="bh-hint">(${c.tooNew} too new)</span>` : "";
             const pipeline = c ? `
                 <span class="bh-pipe">
                     ${c.total} total
-                    · ${levelHint} &amp; $≥${fmt.money(this.hunter.settings.minPrice)}: <b>${c.afterBasic}</b>
+                    · $≥${fmt.money(this.hunter.settings.minPrice)}: <b>${c.afterBasic}</b>
                     · with FF: <b>${c.withFF}</b>${c.ffNull ? ` <span class="bh-hint">(${c.ffNull} null)</span>` : ""}
                     · FF ${this.hunter.settings.minFF.toFixed(1)}–${this.hunter.settings.maxFF.toFixed(1)}: <b>${c.afterFF}</b>
-                    · status ok: <b>${c.matches}</b>
+                    · attackable &amp; status ok: <b>${c.matches}</b>${tooNewHint}
                 </span>
             ` : "";
             content.innerHTML = `
@@ -1032,6 +1030,11 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <span class="bh-hint">0 = Okay only. ~5 lets you queue targets about to leave hospital.</span>
                         </div>
                         <div class="bh-field">
+                            <label>Min account age (days)</label>
+                            <input id="bh-set-minage" class="bh-input" type="number" min="0" max="365" step="1" value="${s.minAccountAgeDays}">
+                            <span class="bh-hint">Excludes fresh accounts still under Torn's new-player protection. 14 = safe default.</span>
+                        </div>
+                        <div class="bh-field">
                             <label>Fair-fight min</label>
                             <input id="bh-set-ffmin" class="bh-input" type="number" min="1" max="10" step="0.1" value="${s.minFF}">
                         </div>
@@ -1106,6 +1109,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                 this.hunter.updateSettings({
                     minPrice: Math.max(0, parseInt($("bh-set-price").value, 10) || 0),
                     hospitalMaxMin: Math.max(0, Math.min(60, parseInt($("bh-set-hosp").value, 10) || 0)),
+                    minAccountAgeDays: Math.max(0, Math.min(365, parseInt($("bh-set-minage").value, 10) || 0)),
                     minFF: cleanMin,
                     maxFF: cleanMax,
                     refreshSec: parseInt($("bh-set-refresh").value, 10),
@@ -1119,7 +1123,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     this.hunter.stop();
                 }
             };
-            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-debug"]
+            ["bh-set-price", "bh-set-hosp", "bh-set-minage", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-debug"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
             if (!KeyResolver.isPDAKey()) {
