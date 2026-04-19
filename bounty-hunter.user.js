@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.2.1
+// @version      1.2.2
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -46,7 +46,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.2.1";
+    const VERSION = "1.2.2";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -1309,16 +1309,21 @@ table.bh-table{width:100%;border-collapse:collapse}
                 if (this._sortCol !== col) return "";
                 return this._sortDir === "asc" ? "sort-asc" : "sort-desc";
             };
-            // Rate-limit banner — prominent, actionable. We keep showing the
-            // prior cycle's matches below so the user still has something to
-            // work with while the back-off runs.
+            // Rate-limit banner — prominent, actionable. When prior matches
+            // exist we keep them on screen; when they don't, the banner fully
+            // replaces the misleading "no matches" empty state.
+            const rateLimitTitle = rows.length > 0
+                ? "Rate limit hit — showing previous results"
+                : "Rate limit hit — no results to show";
+            const rateLimitLead = rows.length > 0
+                ? `Torn / FFScouter returned a rate-limit response while processing ${c && c.total != null ? c.total + " " : ""}bounties. The table below is from the last successful refresh and may be slightly stale.`
+                : `Torn / FFScouter returned a rate-limit response before any matches could be confirmed this cycle. No table is shown because no successful refresh has completed yet.`;
             const rateLimitBanner = rateLimited
                 ? `
                     <div class="bh-rl-banner">
-                        <div class="bh-rl-title">Rate limit hit — showing previous results</div>
+                        <div class="bh-rl-title">${rateLimitTitle}</div>
                         <div class="bh-rl-body">
-                            Torn / FFScouter returned a rate-limit response while processing ${c && c.total != null ? c.total + " " : ""}bounties.
-                            The table below is from the last successful refresh and may be slightly stale.
+                            ${rateLimitLead}
                             <br><br>
                             <b>To reduce API load, tighten your filters so fewer targets need a per-profile lookup:</b>
                             <ul class="bh-rl-tips">
@@ -1342,12 +1347,12 @@ table.bh-table{width:100%;border-collapse:collapse}
                     ${ffError}
                 </div>
                 ${rateLimitBanner}
-                ${rows.length === 0 ? `
+                ${rows.length === 0 ? (rateLimited ? "" : `
                     <div class="bh-empty">
                         No bounties match your filters right now.<br>
                         <span style="color:#666">Adjust min price, FF range, or hospital window under Settings.</span>
                     </div>
-                ` : `
+                `) : `
                     <table class="bh-table">
                         <thead>
                             <tr>
