@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.2.2
+// @version      1.3.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -46,7 +46,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.2.2";
+    const VERSION = "1.3.0";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -140,6 +140,52 @@
         }
         // We're past NPP → target must also be past NPP to be attackable.
         return targetAge >= NPP_DAYS;
+    }
+
+    // Physical-country derivation from Torn v2 status. Used to exclude targets
+    // who are in a different country than us — they aren't reachable from an
+    // attack page. Return values:
+    //   "Torn"      — in Torn (Okay/Jail/Federal, or hospitalised in Torn)
+    //   "<Country>" — abroad (state "Abroad"), or hospitalised in a specific
+    //                 foreign country (description "In a <Adjective> hospital")
+    //   null        — unknown or "Traveling" (in transit, unattackable anyway)
+    //
+    // Adjective→country map covers every Torn travel destination. If a future
+    // destination ships without an entry here the target is returned as null
+    // and the country filter falls open — safer than silently dropping them.
+    const HOSPITAL_ADJ_TO_COUNTRY = {
+        "Mexican": "Mexico",
+        "Caymanian": "Cayman Islands",
+        "Canadian": "Canada",
+        "Hawaiian": "Hawaii",
+        "British": "United Kingdom",
+        "Argentinian": "Argentina",
+        "Argentine": "Argentina",
+        "Swiss": "Switzerland",
+        "Japanese": "Japan",
+        "Chinese": "China",
+        "Emirati": "United Arab Emirates",
+        "South African": "South Africa",
+    };
+    function getPlayerCountry(status) {
+        if (!status || typeof status !== "object") return null;
+        const state = status.state;
+        const desc = status.description || "";
+        if (state === "Okay" || state === "Jail" || state === "Federal") return "Torn";
+        if (state === "Abroad") {
+            const m = /^In\s+(.+)$/.exec(desc);
+            return m ? m[1].trim() : null;
+        }
+        if (state === "Hospital") {
+            if (/^In hospital\b/i.test(desc)) return "Torn";
+            const m = /^In an?\s+(.+?)\s+hospital\b/i.exec(desc);
+            if (m) {
+                const adj = m[1].trim();
+                return HOSPITAL_ADJ_TO_COUNTRY[adj] || null;
+            }
+            return null;
+        }
+        return null; // Traveling, or unknown state
     }
 
     const TOAST_TIMEOUT_MS = 15_000;
@@ -493,6 +539,7 @@
             this.myUserId = null;
             this.myUserLevel = null;
             this.myUserAge = null;      // days since our own signup — drives NPP rule
+            this.myCountry = null;      // "Torn" | "<country>" | null — drives country filter
             this.lastMatches = [];      // last render's rows
             this.lastMatchIds = new Set();
             this.lastCounts = null;     // { total, afterBasic, afterFF, withFF, ffNull, ffError, statusBreakdown }
@@ -538,6 +585,7 @@
                     myUserId: this.myUserId,
                     myUserLevel: this.myUserLevel,
                     myUserAge: this.myUserAge,
+                    myCountry: this.myCountry,
                     lastError: this.lastError ? (this.lastError.message || "error") : null,
                 };
                 localStorage.setItem(LS.shared, JSON.stringify(payload));
@@ -550,6 +598,8 @@
             if (s.myUserId != null && this.myUserId == null) this.myUserId = s.myUserId;
             if (s.myUserLevel != null && this.myUserLevel == null) this.myUserLevel = s.myUserLevel;
             if (s.myUserAge != null && this.myUserAge == null) this.myUserAge = s.myUserAge;
+            // Country is mutable — always adopt the latest writer's value.
+            if (s.myCountry != null) this.myCountry = s.myCountry;
         }
 
         // Apply a new match list: diff against previous to fire toasts, update
@@ -632,18 +682,18 @@
             logDebug(`refresh: start`, "info");
             if (this.onUpdate) this.onUpdate({ loading: true });
 
-            // Resolve our ID, level, and age once. Age feeds the NPP rule
-            // (target_age >= 14 unless we're ourselves under NPP).
-            if (!this.myUserId || this.myUserLevel == null || this.myUserAge == null) {
-                try {
-                    const profile = await this.api.validateKey();
-                    if (profile) {
-                        this.myUserId = profile.id || this.myUserId;
-                        this.myUserLevel = (typeof profile.level === "number") ? profile.level : this.myUserLevel;
-                        this.myUserAge = (typeof profile.age === "number") ? profile.age : this.myUserAge;
-                    }
-                } catch { /* non-fatal */ }
-            }
+            // Resolve our ID/level/age/country. ID/level/age are near-immutable
+            // so we cache them after the first success, but `country` flips
+            // whenever we travel, so we re-read status on every cycle.
+            try {
+                const profile = await this.api.validateKey();
+                if (profile) {
+                    this.myUserId = profile.id || this.myUserId;
+                    this.myUserLevel = (typeof profile.level === "number") ? profile.level : this.myUserLevel;
+                    this.myUserAge = (typeof profile.age === "number") ? profile.age : this.myUserAge;
+                    this.myCountry = getPlayerCountry(profile.status) || this.myCountry;
+                }
+            } catch { /* non-fatal — keep previous identity/country */ }
 
             const { bounties, delaySec } = await this.api.fetchAllBounties();
             logDebug(`fetched ${bounties.length} bounties (cache delay ${delaySec || 0}s)`, "ok");
@@ -715,6 +765,7 @@
             const profiles = await this._fetchProfiles(byFF.map((b) => Number(b.target_id)));
             const matches = [];
             counts.tooNew = 0;
+            counts.differentCountry = 0;
             for (const b of byFF) {
                 const p = profiles.get(Number(b.target_id));
                 if (!p || !p.status) { counts.statusBreakdown["unknown"] = (counts.statusBreakdown["unknown"] || 0) + 1; continue; }
@@ -727,6 +778,16 @@
                 counts.statusBreakdown[state] = (counts.statusBreakdown[state] || 0) + 1;
                 const until = p.status.until || 0;
                 const remaining = Math.max(0, until - nowSec);
+                // Country filter — must be in the same country as us to be
+                // attackable. Only applied when both sides are known; if we
+                // can't determine our own location (pre-first-profile, or
+                // "Traveling") or the target's (unknown hospital adjective),
+                // the filter falls open so we don't silently drop everyone.
+                const targetCountry = getPlayerCountry(p.status);
+                if (this.myCountry && targetCountry && targetCountry !== this.myCountry) {
+                    counts.differentCountry++;
+                    continue;
+                }
                 if (state === "Okay") {
                     matches.push({ ...b, statusState: "Okay", hospUntil: 0 });
                 } else if (state === "Hospital" && remaining <= hospWindowSec) {
