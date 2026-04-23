@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.3.0
+// @version      1.4.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -46,7 +46,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.3.0";
+    const VERSION = "1.4.0";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -936,7 +936,62 @@
                 dismiss();
             };
             el.querySelector(".bh-toast-attack").addEventListener("click", attack);
-            el.addEventListener("click", attack);
+
+            // Desktop: whole card is clickable for convenience. Touch devices:
+            // require the explicit Attack button so a mis-tap near the close
+            // button can't launch an attack. Swipe handlers below dismiss.
+            const isTouch = (typeof matchMedia === "function") && matchMedia("(hover: none)").matches;
+            if (!isTouch) el.addEventListener("click", attack);
+
+            // Swipe-to-dismiss (touch only). Pointer events unify mouse/touch,
+            // but we gate on pointerType so a desktop drag doesn't accidentally
+            // dismiss. `moved` is sticky once |dx|>6 so a small drag that ends
+            // below the 80px threshold still suppresses the synthetic click.
+            let startX = 0, dx = 0, dragging = false, moved = false;
+            el.addEventListener("pointerdown", (e) => {
+                if (e.pointerType !== "touch") return;
+                // Don't hijack the close button — its tap target is tiny and
+                // starting a drag would race the click.
+                if (e.target.closest(".bh-toast-close")) return;
+                dragging = true; moved = false; startX = e.clientX; dx = 0;
+                el.style.transition = "none";
+                try { el.setPointerCapture(e.pointerId); } catch { /* non-capturable pointer */ }
+                this._pauseTimer(card);
+            });
+            el.addEventListener("pointermove", (e) => {
+                if (!dragging) return;
+                dx = e.clientX - startX;
+                if (Math.abs(dx) > 6) moved = true;
+                if (moved) {
+                    el.style.transform = `translateX(${dx}px)`;
+                    el.style.opacity = String(Math.max(0.3, 1 - Math.abs(dx) / 200));
+                }
+            });
+            const endDrag = () => {
+                if (!dragging) return;
+                dragging = false;
+                el.style.transition = "transform .18s ease-out, opacity .18s ease-out";
+                if (Math.abs(dx) > 80) {
+                    el.style.transform = `translateX(${dx > 0 ? 400 : -400}px)`;
+                    el.style.opacity = "0";
+                    setTimeout(() => this._remove(card), 180);
+                } else {
+                    el.style.transform = ""; el.style.opacity = "";
+                    this._resumeTimer(card);
+                }
+            };
+            el.addEventListener("pointerup", endDrag);
+            el.addEventListener("pointercancel", endDrag);
+            // Swallow the click that follows a drag so a short swipe that
+            // doesn't cross the threshold still doesn't fire attack.
+            el.addEventListener("click", (e) => {
+                if (moved) {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    moved = false;
+                }
+            }, true);
+
             el.addEventListener("pointerenter", () => this._pauseTimer(card));
             el.addEventListener("pointerleave", () => this._resumeTimer(card));
 
@@ -1139,6 +1194,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-toast{pointer-events:auto;width:300px;max-width:100%;background:#1e1e1e;border:1px solid #444;border-left:4px solid #ef5350;
   border-radius:8px;padding:10px 12px;color:#ddd;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.5);position:relative;cursor:pointer;
+  touch-action:pan-y;user-select:none;-webkit-user-select:none;
   animation:bh-toast-in .2s ease-out}
 @keyframes bh-toast-in{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
 .bh-toast:hover{border-color:#666}
@@ -1171,7 +1227,11 @@ table.bh-table{width:100%;border-collapse:collapse}
   .bh-grid-2{grid-template-columns:1fr}
   .bh-table td,.bh-table th{padding:6px 6px;font-size:12px}
   #bh-toasts{left:8px;right:8px;bottom:8px;align-items:stretch}
-  .bh-toast{width:auto}
+  .bh-toast{width:auto;padding:14px 12px 12px}
+  /* ≥44x44 tap target so fingers don't miss into the card (which attacks). */
+  .bh-toast-close{top:0;right:0;min-width:44px;min-height:44px;padding:0;font-size:26px;
+    display:flex;align-items:center;justify-content:center}
+  .bh-toast-head{margin-right:44px}
 }
 `;
         document.head.appendChild(style);
