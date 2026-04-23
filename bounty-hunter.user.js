@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.5.0
+// @version      1.5.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -46,7 +46,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.5.0";
+    const VERSION = "1.5.1";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -1005,20 +1005,57 @@
 
             // Desktop: whole card is clickable for convenience. Touch devices:
             // require the explicit Attack button so a mis-tap near the close
-            // button can't launch an attack. Swipe handlers below dismiss.
+            // button can't launch an attack.
             const isTouch = (typeof matchMedia === "function") && matchMedia("(hover: none)").matches;
             if (!isTouch) el.addEventListener("click", attack);
 
-            // Swipe-to-dismiss (touch only). Pointer events unify mouse/touch,
-            // but we gate on pointerType so a desktop drag doesn't accidentally
-            // dismiss. `moved` is sticky once |dx|>6 so a small drag that ends
-            // below the 80px threshold still suppresses the synthetic click.
+            this._attachSwipeToDismiss(el, card);
+            el.addEventListener("pointerenter", () => this._pauseTimer(card));
+            el.addEventListener("pointerleave", () => this._resumeTimer(card));
+
+            this._resumeTimer(card);
+            this.container.appendChild(el);
+            this._cards.push(card);
+        }
+
+        _showMoreCard(count) {
+            // One unified overflow card (don't stack multiple).
+            const existing = this._cards.find((c) => c.isMore);
+            if (existing) {
+                existing.count += count;
+                existing.el.querySelector(".bh-toast-more-label").textContent = `+${existing.count} more`;
+                return;
+            }
+            const el = document.createElement("div");
+            el.className = "bh-toast bh-toast-more";
+            el.innerHTML = `
+                <div class="bh-toast-more-label">+${count} more</div>
+                <div class="bh-toast-more-hint">Click to open the Hunt list</div>
+            `;
+            const card = { id: null, el, timer: null, remaining: TOAST_TIMEOUT_MS, enteredAt: 0, isMore: true, count };
+            el.addEventListener("click", () => {
+                if (window.__bhUI) window.__bhUI.toggle(true);
+                this._remove(card);
+            });
+            this._attachSwipeToDismiss(el, card);
+            el.addEventListener("pointerenter", () => this._pauseTimer(card));
+            el.addEventListener("pointerleave", () => this._resumeTimer(card));
+            this._resumeTimer(card);
+            this.container.appendChild(el);
+            this._cards.push(card);
+        }
+
+        // Touch-swipe horizontal dismiss — shared by bounty cards and the
+        // overflow "+N more" card. Desktop pointer drags are ignored on
+        // purpose so mouse-users' click-to-act gestures aren't hijacked.
+        // `moved` is sticky once |dx|>6 and is cleared by the capture-phase
+        // click swallow, so a sub-threshold swipe can't fall through to the
+        // card's click handler (attack / open-hunt-list).
+        _attachSwipeToDismiss(el, card) {
             let startX = 0, dx = 0, dragging = false, moved = false;
             el.addEventListener("pointerdown", (e) => {
                 if (e.pointerType !== "touch") return;
-                // Don't hijack the close button — its tap target is tiny and
-                // starting a drag would race the click.
-                if (e.target.closest(".bh-toast-close")) return;
+                if (e.target.closest(".bh-toast-close")) return; // don't race the × tap
                 dragging = true; moved = false; startX = e.clientX; dx = 0;
                 el.style.transition = "none";
                 try { el.setPointerCapture(e.pointerId); } catch { /* non-capturable pointer */ }
@@ -1048,8 +1085,6 @@
             };
             el.addEventListener("pointerup", endDrag);
             el.addEventListener("pointercancel", endDrag);
-            // Swallow the click that follows a drag so a short swipe that
-            // doesn't cross the threshold still doesn't fire attack.
             el.addEventListener("click", (e) => {
                 if (moved) {
                     e.stopPropagation();
@@ -1057,39 +1092,6 @@
                     moved = false;
                 }
             }, true);
-
-            el.addEventListener("pointerenter", () => this._pauseTimer(card));
-            el.addEventListener("pointerleave", () => this._resumeTimer(card));
-
-            this._resumeTimer(card);
-            this.container.appendChild(el);
-            this._cards.push(card);
-        }
-
-        _showMoreCard(count) {
-            // One unified overflow card (don't stack multiple).
-            const existing = this._cards.find((c) => c.isMore);
-            if (existing) {
-                existing.count += count;
-                existing.el.querySelector(".bh-toast-more-label").textContent = `+${existing.count} more`;
-                return;
-            }
-            const el = document.createElement("div");
-            el.className = "bh-toast bh-toast-more";
-            el.innerHTML = `
-                <div class="bh-toast-more-label">+${count} more</div>
-                <div class="bh-toast-more-hint">Click to open the Hunt list</div>
-            `;
-            const card = { id: null, el, timer: null, remaining: TOAST_TIMEOUT_MS, enteredAt: 0, isMore: true, count };
-            el.addEventListener("click", () => {
-                if (window.__bhUI) window.__bhUI.toggle(true);
-                this._remove(card);
-            });
-            el.addEventListener("pointerenter", () => this._pauseTimer(card));
-            el.addEventListener("pointerleave", () => this._resumeTimer(card));
-            this._resumeTimer(card);
-            this.container.appendChild(el);
-            this._cards.push(card);
         }
 
         // Small "Clear all" pill button, appears above the stack when 2+
