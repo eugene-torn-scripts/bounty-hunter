@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.4.0
+// @version      1.5.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -46,7 +46,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.4.0";
+    const VERSION = "1.5.0";
     const LS = {
         apiKey:   "bh_apiKey",
         ffKey:    "bh_ffscouterKey",
@@ -123,6 +123,17 @@
         refreshSec: 60,
         toastsEnabled: true,
         includeUnknownFF: false,
+        // Master kill-switch for the refresh loop. When off, auto-refresh
+        // and cross-tab free-ride are both skipped; last-known matches stay
+        // on screen and manual "Refresh now" still works.
+        searchEnabled: true,
+        // Skip auto-refresh when the player can't attack anyway. Requires a
+        // Torn API key with Minimal access or higher (`/user/bars`). Opt-in
+        // so existing Public-key users aren't forced to regenerate.
+        pauseOnLowEnergy: false,
+        // Standard attack costs 25 energy; raise if you want to keep a buffer
+        // for chains/merits. 0 is treated the same as pauseOnLowEnergy=false.
+        minEnergy: 25,
     };
 
     // Torn New Player Protection (https://wiki.torn.com/wiki/New_Player_Protection):
@@ -445,6 +456,14 @@
             const data = await this._get("/user/profile");
             return (data && data.profile) || null;
         }
+
+        // /user/bars is declared ApiKeyMinimal in the Torn v2 spec — a Public-
+        // only key returns error code 16 ("Access level of this key is not
+        // high enough") or similar. Callers should catch and fall back.
+        async fetchBars() {
+            const data = await this._get("/user/bars");
+            return (data && data.bars) || null;
+        }
     }
 
     // ════════════════════════════════════════════════════════════
@@ -548,6 +567,9 @@
             this._running = false;
             this._nextAt = 0;
             this.lastError = null;
+            this.myEnergy = null;       // { current, maximum } when pauseOnLowEnergy is on + call succeeded
+            this.lastEnergyError = null; // "scope" | "error" | null — drives the settings-panel hint
+            this.pausedReason = null;   // "disabled" | "low-energy" | null — drives the Hunt-tab banner
             this.onUpdate = null;       // ui sets this
             this.onToast = null;        // toaster sets this
         }
@@ -635,12 +657,26 @@
 
         start() {
             if (this._running) return;
+            if (!this.settings.searchEnabled) {
+                // Honor the master kill-switch even on cold boot — don't start
+                // the loop, and let the Hunt tab render the "disabled" banner.
+                this.pausedReason = "disabled";
+                if (this.onUpdate) this.onUpdate();
+                return;
+            }
             this._running = true;
             this._tick();
         }
 
         async _tick() {
             if (!this._running) return;
+            if (!this.settings.searchEnabled) {
+                // Toggled off while running — stop and let the UI update.
+                this.pausedReason = "disabled";
+                this._running = false;
+                if (this.onUpdate) this.onUpdate();
+                return;
+            }
             let waitSec = this.settings.refreshSec;
             try {
                 // Cross-tab free-ride: if another tab refreshed recently under
@@ -694,6 +730,36 @@
                     this.myCountry = getPlayerCountry(profile.status) || this.myCountry;
                 }
             } catch { /* non-fatal — keep previous identity/country */ }
+
+            // Energy gate — skip the (expensive) bounties fetch when the
+            // player can't attack anyway. Opt-in; needs a Minimal+ key.
+            // Failures here never block bounty hunting — we just drop the
+            // gate for this cycle and surface a hint in the settings panel.
+            if (this.settings.pauseOnLowEnergy && this.settings.minEnergy > 0) {
+                try {
+                    const bars = await this.api.fetchBars();
+                    const energy = bars && bars.energy;
+                    if (energy && typeof energy.current === "number") {
+                        this.myEnergy = { current: energy.current, maximum: energy.maximum };
+                        this.lastEnergyError = null;
+                        if (energy.current < this.settings.minEnergy) {
+                            this.pausedReason = "low-energy";
+                            logDebug(`paused — energy ${energy.current}/${energy.maximum} < ${this.settings.minEnergy}; skipping bounty fetch`, "info");
+                            if (this.onUpdate) this.onUpdate({ loading: false });
+                            return 0;
+                        }
+                    }
+                } catch (e) {
+                    // Torn code 16 = scope too low; treat anything else as
+                    // a transient error. Either way, don't block hunting.
+                    this.lastEnergyError = (e && e.tornCode === 16) ? "scope" : "error";
+                    logDebug(`bars fetch failed (${e && e.tornCode ? "code " + e.tornCode : "network"}): ${e && e.message || "error"}`, "err");
+                }
+            } else {
+                this.myEnergy = null;
+                this.lastEnergyError = null;
+            }
+            this.pausedReason = null;
 
             const { bounties, delaySec } = await this.api.fetchAllBounties();
             logDebug(`fetched ${bounties.length} bounties (cache delay ${delaySec || 0}s)`, "ok");
@@ -1120,6 +1186,7 @@
 .bh-rl-tips{margin:6px 0 6px 20px;padding:0;color:#ddd}
 .bh-rl-tips li{margin:2px 0}
 .bh-rl-hint{color:#888;font-size:11px;font-style:italic}
+.bh-paused-banner{background:#1e2833;border:1px solid #3a5a7a;border-left:4px solid #4fa3d4;border-radius:4px;padding:8px 12px;margin:0 0 12px;color:#cfe4f2;font-size:12px}
 #bh-refresh-btn{padding:4px 10px;background:#333;border:1px solid #444;color:#ddd;border-radius:4px;cursor:pointer;font-size:12px}
 #bh-refresh-btn:hover{background:#3a3a3a}
 #bh-refresh-btn:disabled{opacity:.5;cursor:not-allowed}
@@ -1458,6 +1525,14 @@ table.bh-table{width:100%;border-collapse:collapse}
                     </div>
                 `
                 : "";
+            // Paused banner — either the master toggle is off, or energy is
+            // below the configured threshold. Stays above the table so the
+            // "why hasn't this refreshed?" question is answered at a glance.
+            const pausedBanner = this.hunter.pausedReason === "low-energy" && this.hunter.myEnergy
+                ? `<div class="bh-paused-banner">⏸ Paused — energy <b>${this.hunter.myEnergy.current}/${this.hunter.myEnergy.maximum}</b> (below ${this.hunter.settings.minEnergy}). Auto-refresh resumes when you recover enough to attack.</div>`
+                : this.hunter.pausedReason === "disabled"
+                    ? `<div class="bh-paused-banner">⏸ Search disabled — turn it back on in Settings to resume auto-refresh.</div>`
+                    : "";
             content.innerHTML = `
                 <div id="bh-status-line">
                     <button id="bh-refresh-btn" class="bh-btn-muted">Refresh now</button>
@@ -1467,6 +1542,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     ${ffKeyMissing}
                     ${ffError}
                 </div>
+                ${pausedBanner}
                 ${rateLimitBanner}
                 ${rows.length === 0 ? (rateLimited ? "" : `
                     <div class="bh-empty">
@@ -1585,7 +1661,26 @@ table.bh-table{width:100%;border-collapse:collapse}
             const pdaNote = KeyResolver.isPDAKey()
                 ? `<p class="bh-hint">Your Torn key is provided by Torn PDA. It is not editable here.</p>`
                 : "";
+            const energyScopeHint = (s.pauseOnLowEnergy && this.hunter.lastEnergyError === "scope")
+                ? `<span class="bh-err">Your Torn API key can't read <code>/user/bars</code>. Regenerate it in <a class="bh-name-link" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Preferences → API Key</a> with <b>Minimal</b> access or higher.</span>`
+                : "";
+            const energyNowLine = (s.pauseOnLowEnergy && this.hunter.myEnergy)
+                ? `<span class="bh-hint">Current energy: <b>${this.hunter.myEnergy.current}/${this.hunter.myEnergy.maximum}</b></span>`
+                : "";
             content.innerHTML = `
+                <div class="bh-section">
+                    <h3>Search</h3>
+                    <label class="bh-check"><input type="checkbox" id="bh-set-enabled"${s.searchEnabled ? " checked" : ""}> Bounty search enabled</label>
+                    <p class="bh-hint">Master switch for the refresh loop. When off, no automatic Torn/FFScouter calls are made and no toasts fire.</p>
+                    <label class="bh-check"><input type="checkbox" id="bh-set-pause-energy"${s.pauseOnLowEnergy ? " checked" : ""}> Pause when energy is below</label>
+                    <div class="bh-field" style="max-width:160px;margin-top:4px">
+                        <input id="bh-set-min-energy" class="bh-input" type="number" min="0" max="1000" step="1" value="${s.minEnergy}">
+                    </div>
+                    <p class="bh-hint">Skips the bounties fetch when you can't attack anyway (25 = standard attack cost). Requires a Torn key with <b>Minimal</b> access or higher.</p>
+                    ${energyNowLine}
+                    ${energyScopeHint}
+                </div>
+
                 <div class="bh-section">
                     <h3>Filters</h3>
                     <div class="bh-grid-2">
@@ -1692,15 +1787,24 @@ table.bh-table{width:100%;border-collapse:collapse}
                     refreshSec: parseInt($("bh-set-refresh").value, 10),
                     toastsEnabled: $("bh-set-toasts").checked,
                     includeUnknownFF: $("bh-set-unkff").checked,
+                    searchEnabled: $("bh-set-enabled").checked,
+                    pauseOnLowEnergy: $("bh-set-pause-energy").checked,
+                    minEnergy: Math.max(0, Math.min(1000, parseInt($("bh-set-min-energy").value, 10) || 0)),
                 });
-                if (this.hunter.settings.refreshSec > 0) {
-                    this.hunter.stop();
+                // Stop unconditionally, then let start() self-gate on
+                // searchEnabled + refreshSec. Handles all four transitions
+                // (on→on, on→off, off→on, off→off) with one code path.
+                this.hunter.stop();
+                if (this.hunter.settings.searchEnabled && this.hunter.settings.refreshSec > 0) {
                     this.hunter.start();
+                } else if (!this.hunter.settings.searchEnabled) {
+                    this.hunter.pausedReason = "disabled";
                 } else {
-                    this.hunter.stop();
+                    this.hunter.pausedReason = null;
                 }
             };
-            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-unkff"]
+            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-unkff",
+             "bh-set-enabled", "bh-set-pause-energy", "bh-set-min-energy"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
             const setStatus = (elId, kind, msg) => {
@@ -1775,7 +1879,16 @@ table.bh-table{width:100%;border-collapse:collapse}
             });
             $("bh-reset").addEventListener("click", () => {
                 if (!confirm("Reset filters to defaults?")) return;
-                this.hunter.updateSettings({ ...DEFAULT_SETTINGS, toastsEnabled: this.hunter.settings.toastsEnabled });
+                // Preserve user-choice toggles — "reset filters" shouldn't
+                // flip the master search switch or silently re-enable toasts.
+                const s = this.hunter.settings;
+                this.hunter.updateSettings({
+                    ...DEFAULT_SETTINGS,
+                    toastsEnabled: s.toastsEnabled,
+                    searchEnabled: s.searchEnabled,
+                    pauseOnLowEnergy: s.pauseOnLowEnergy,
+                    minEnergy: s.minEnergy,
+                });
                 this._renderActive();
             });
 

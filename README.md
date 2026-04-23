@@ -35,6 +35,8 @@ All configurable in the Settings tab:
 | Hospital max minutes | 5 | How close to release to still consider a Hospital target. `0` = Okay only. |
 | Auto-refresh interval | 60 s | Respects `bounties_delay` from Torn — no wasted calls. |
 | Toast notifications | on | Turn off for silent mode. |
+| Bounty search enabled | on | Master switch. Turn off to freeze the loop without uninstalling. |
+| Pause when energy below | off (25) | Skips the bounties fetch when you can't attack anyway. Needs a Torn key with **Minimal** access or higher (`/user/bars`); Public-only keys will see a hint in Settings prompting a regeneration. |
 
 ---
 
