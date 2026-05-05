@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.6.2
+// @version      1.6.3
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.6.2";
+    const VERSION = "1.6.3";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -57,6 +57,7 @@
         debug:     "bh_debug",       // "1" when the debug log is on; undefined/"" otherwise
         donorCache:"bh_donorCache",  // { userId, donor, lastDonationTs, fetchedAt } — 6h client cache
         donorAck:  "bh_donorAck",    // unix-ts of last donation the user dismissed the banner for
+        userId:    "bh_userId",      // resolved Torn user id (cached so DonorClient doesn't race Hunter.start)
     };
     // Cloudflare Worker that powers the donor "thank-you" banner. Read-only,
     // takes only the requester's Torn user id (no API key, no PII), returns
@@ -594,6 +595,29 @@
             if (!c || c.userId !== userId) return null;
             if ((Date.now() - (c.fetchedAt || 0)) > this.CACHE_TTL_MS) return null;
             return c;
+        },
+
+        // Resolve our own Torn user id without depending on the Hunter's
+        // refresh loop having completed. Caches in localStorage so a cold
+        // panel open is instant after the first session. Falls back to a
+        // direct /user/?selections=basic call (api.torn.com is in Torn's
+        // page CSP allowlist, so plain fetch works there).
+        async getUserId() {
+            const stored = localStorage.getItem(LS.userId);
+            if (stored && /^\d+$/.test(stored)) return parseInt(stored, 10);
+            const key = KeyResolver.resolveTornKey();
+            if (!key) return null;
+            try {
+                const r = await fetch(`https://api.torn.com/v2/user/?selections=basic&key=${encodeURIComponent(key)}`);
+                if (!r.ok) return null;
+                const d = await r.json();
+                const id = d && d.player_id;
+                if (id) {
+                    try { localStorage.setItem(LS.userId, String(id)); } catch { /* quota */ }
+                    return id;
+                }
+            } catch { /* network */ }
+            return null;
         },
 
         // Torn's page CSP blocks `fetch()` to any host that isn't on its
@@ -1730,11 +1754,6 @@ table.bh-table{width:100%;border-collapse:collapse}
             // Belt-and-braces — host is created in _renderHunt(); a missing
             // node just means we're being called outside the Hunt tab.
             if (!host) { console.log("[BH donor] no host"); return; }
-            const userId = this.hunter.myUserId;
-            console.log("[BH donor] _renderDonorBanner", { userId, ackTs: DonorClient._readAck(), cache: DonorClient._readCache() });
-            // Without our own user id we can't ask the worker about ourselves,
-            // and the banner has nothing to say about a stranger.
-            if (!userId) { host.innerHTML = ""; return; }
 
             const paint = (status) => {
                 console.log("[BH donor] paint", { status, shouldShow: DonorClient.shouldShow(status) });
@@ -1755,14 +1774,16 @@ table.bh-table{width:100%;border-collapse:collapse}
                 });
             };
 
-            const cached = DonorClient.cachedStatus(userId);
-            if (cached) {
-                paint(cached);
-                return;
-            }
-            // Cache miss → fire-and-forget. Keep the host empty until the
-            // fetch resolves so we never flash an empty banner shell.
-            DonorClient.fetchStatus(userId).then(paint);
+            // Resolve user id independently of the Hunter (it might still be
+            // mid-`validateKey` when the panel first renders). Cached after
+            // the first successful resolve so subsequent renders are sync.
+            DonorClient.getUserId().then((userId) => {
+                console.log("[BH donor] resolved userId", { userId, ackTs: DonorClient._readAck(), cache: DonorClient._readCache() });
+                if (!userId || !host.isConnected) return;
+                const cached = DonorClient.cachedStatus(userId);
+                if (cached) { paint(cached); return; }
+                DonorClient.fetchStatus(userId).then(paint);
+            });
         }
 
         _sortMatches(list) {
