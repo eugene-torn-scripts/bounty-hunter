@@ -13,10 +13,10 @@ Suggested screenshots to capture:
 
 | Marker | What to screenshot |
 |---|---|
-| `TODO-SCREENSHOT-HUNT` | Hunt tab with a handful of matches (rows + sort arrows visible) |
-| `TODO-SCREENSHOT-TOAST` | A corner toast fired on a new match, ideally with the ×N count badge |
-| `TODO-SCREENSHOT-FOOTER` | Torn footer showing the 🎯 bounty-hunter button (or the shared 3-dots menu open) |
-| `TODO-SCREENSHOT-SETTINGS` | Settings tab with filter fields visible |
+| `https://editor.torn.com/765b6b17-bb22-4f30-9106-7e28ed4821e0-4192025.png` | Hunt tab with a handful of matches (rows + sort arrows visible) |
+| `https://editor.torn.com/97045054-f30e-430b-9830-06af6ec6aaef-4192025.png` | A corner toast fired on a new match, ideally with the ×N count badge |
+| `https://editor.torn.com/cdbeb15b-7280-4a13-83f9-332633cf2b91-4192025.png` | Torn footer showing the 🎯 bounty-hunter button (or the shared 3-dots menu open) |
+| `https://editor.torn.com/cbbd6b47-21a9-45e4-82c7-535bde31ba85-4192025.png` | Settings tab with filter fields visible |
 
 ---
 
@@ -86,8 +86,8 @@ Suggested screenshots to capture:
 </p>
 <p>&nbsp;</p>
 <p>
-  <a href="TODO-SCREENSHOT-HUNT" target="_blank" rel="noopener"
-    ><img src="TODO-SCREENSHOT-HUNT" alt="Hunt tab screenshot" width="600"
+  <a href="https://editor.torn.com/765b6b17-bb22-4f30-9106-7e28ed4821e0-4192025.png" target="_blank" rel="noopener"
+    ><img src="https://editor.torn.com/765b6b17-bb22-4f30-9106-7e28ed4821e0-4192025.png" alt="Hunt tab screenshot" width="600"
   /></a>
 </p>
 <p>&nbsp;</p>
@@ -102,8 +102,8 @@ Suggested screenshots to capture:
 </p>
 <p>&nbsp;</p>
 <p>
-  <a href="TODO-SCREENSHOT-TOAST" target="_blank" rel="noopener"
-    ><img src="TODO-SCREENSHOT-TOAST" alt="Toast notification screenshot" width="400"
+  <a href="https://editor.torn.com/97045054-f30e-430b-9830-06af6ec6aaef-4192025.png" target="_blank" rel="noopener"
+    ><img src="https://editor.torn.com/97045054-f30e-430b-9830-06af6ec6aaef-4192025.png" alt="Toast notification screenshot" width="400"
   /></a>
 </p>
 <p>&nbsp;</p>
@@ -128,8 +128,8 @@ Suggested screenshots to capture:
 </ul>
 <p>&nbsp;</p>
 <p>
-  <a href="TODO-SCREENSHOT-SETTINGS" target="_blank" rel="noopener"
-    ><img src="TODO-SCREENSHOT-SETTINGS" alt="Settings tab screenshot" width="500"
+  <a href="https://editor.torn.com/cbbd6b47-21a9-45e4-82c7-535bde31ba85-4192025.png" target="_blank" rel="noopener"
+    ><img src="https://editor.torn.com/cbbd6b47-21a9-45e4-82c7-535bde31ba85-4192025.png" alt="Settings tab screenshot" width="500"
   /></a>
 </p>
 <p>&nbsp;</p>
@@ -181,8 +181,8 @@ Suggested screenshots to capture:
 </ol>
 <p>&nbsp;</p>
 <p>
-  <a href="TODO-SCREENSHOT-FOOTER" target="_blank" rel="noopener"
-    ><img src="TODO-SCREENSHOT-FOOTER" alt="Footer button screenshot" width="435"
+  <a href="https://editor.torn.com/cdbeb15b-7280-4a13-83f9-332633cf2b91-4192025.png" target="_blank" rel="noopener"
+    ><img src="https://editor.torn.com/cdbeb15b-7280-4a13-83f9-332633cf2b91-4192025.png" alt="Footer button screenshot" width="435"
   /></a>
 </p>
 <p>&nbsp;</p>
