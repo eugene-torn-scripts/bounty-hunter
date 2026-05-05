@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.6.0
+// @version      1.6.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.6.0";
+    const VERSION = "1.6.1";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -595,24 +595,56 @@
             return c;
         },
 
+        // Torn's page CSP blocks `fetch()` to any host that isn't on its
+        // allowlist (api.torn.com, ffscouter.com via redirect, etc.).
+        // GM_xmlhttpRequest goes through Tampermonkey's own network stack
+        // and bypasses page CSP. PDA's GM polyfill silently drops response
+        // bodies on 200s (see TAT history) so on PDA we fall back to native
+        // fetch — PDA does not enforce torn.com's CSP the same way and the
+        // worker has Access-Control-Allow-Origin: * for that path.
+        _request(url) {
+            return new Promise((resolve) => {
+                const useFetch = IS_PDA || typeof GM_XHR !== "function";
+                if (useFetch) {
+                    fetch(url, { method: "GET", credentials: "omit", cache: "default" })
+                        .then((r) => r.ok ? r.json() : null)
+                        .then(resolve)
+                        .catch(() => resolve(null));
+                    return;
+                }
+                try {
+                    GM_XHR({
+                        method: "GET",
+                        url,
+                        anonymous: true,
+                        timeout: 10_000,
+                        onload: (res) => {
+                            if (!res || res.status < 200 || res.status >= 300) return resolve(null);
+                            try { resolve(JSON.parse(res.responseText)); }
+                            catch { resolve(null); }
+                        },
+                        onerror: () => resolve(null),
+                        ontimeout: () => resolve(null),
+                    });
+                } catch { resolve(null); }
+            });
+        },
+
         async fetchStatus(userId) {
             if (!userId) return null;
             if (this._inflight) return this._inflight;
             const url = `${DONOR_API_BASE}/donor?id=${encodeURIComponent(userId)}&script=bounty`;
             this._inflight = (async () => {
-                try {
-                    const r = await fetch(url, { method: "GET", credentials: "omit", cache: "default" });
-                    if (!r.ok) return null;
-                    const d = await r.json();
-                    const status = {
-                        userId,
-                        donor: !!d.donor,
-                        lastDonationTs: Number(d.lastDonationTs) || 0,
-                        fetchedAt: Date.now(),
-                    };
-                    this._writeCache(status);
-                    return status;
-                } catch { return null; }
+                const d = await this._request(url);
+                if (!d) return null;
+                const status = {
+                    userId,
+                    donor: !!d.donor,
+                    lastDonationTs: Number(d.lastDonationTs) || 0,
+                    fetchedAt: Date.now(),
+                };
+                this._writeCache(status);
+                return status;
             })();
             try { return await this._inflight; }
             finally { this._inflight = null; }
