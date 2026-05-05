@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.6.4
+// @version      1.6.5
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.6.4";
+    const VERSION = "1.6.5";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -604,13 +604,19 @@
         // page CSP allowlist, so plain fetch works there).
         async getUserId() {
             const stored = localStorage.getItem(LS.userId);
+            console.log("[BH donor] getUserId: stored", stored);
             if (stored && /^\d+$/.test(stored)) return parseInt(stored, 10);
             const key = KeyResolver.resolveTornKey();
+            console.log("[BH donor] getUserId: key resolved?", !!key, "len", key ? key.length : 0);
             if (!key) return null;
             try {
-                const r = await fetch(`https://api.torn.com/v2/user/?selections=basic&key=${encodeURIComponent(key)}`);
+                const url = `https://api.torn.com/v2/user/?selections=basic&key=${encodeURIComponent(key)}`;
+                console.log("[BH donor] getUserId: fetching", url.replace(/key=[^&]+/, "key=***"));
+                const r = await fetch(url);
+                console.log("[BH donor] getUserId: response", r.status, r.ok);
                 if (!r.ok) return null;
                 const d = await r.json();
+                console.log("[BH donor] getUserId: body keys", d && Object.keys(d), "profile", d && d.profile);
                 // v2 returns { profile: { id, name, level, ... } }, not the v1
                 // top-level `player_id`. Fall back to player_id just in case
                 // some future endpoint flips back.
@@ -619,7 +625,8 @@
                     try { localStorage.setItem(LS.userId, String(id)); } catch { /* quota */ }
                     return id;
                 }
-            } catch { /* network */ }
+                console.log("[BH donor] getUserId: no id in response");
+            } catch (e) { console.log("[BH donor] getUserId: threw", e); }
             return null;
         },
 
