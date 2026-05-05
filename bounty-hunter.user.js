@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.6.5
+// @version      1.6.6
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.6.5";
+    const VERSION = "1.6.6";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -604,29 +604,22 @@
         // page CSP allowlist, so plain fetch works there).
         async getUserId() {
             const stored = localStorage.getItem(LS.userId);
-            console.log("[BH donor] getUserId: stored", stored);
             if (stored && /^\d+$/.test(stored)) return parseInt(stored, 10);
             const key = KeyResolver.resolveTornKey();
-            console.log("[BH donor] getUserId: key resolved?", !!key, "len", key ? key.length : 0);
             if (!key) return null;
             try {
-                const url = `https://api.torn.com/v2/user/?selections=basic&key=${encodeURIComponent(key)}`;
-                console.log("[BH donor] getUserId: fetching", url.replace(/key=[^&]+/, "key=***"));
-                const r = await fetch(url);
-                console.log("[BH donor] getUserId: response", r.status, r.ok);
+                // v2 path: `/user/profile` (Public-key OK). The
+                // `?selections=basic` v1-syntax shim returned `{error}` for
+                // some Public keys despite v2 partially honouring it.
+                const r = await fetch(`https://api.torn.com/v2/user/profile?key=${encodeURIComponent(key)}`);
                 if (!r.ok) return null;
                 const d = await r.json();
-                console.log("[BH donor] getUserId: body keys", d && Object.keys(d), "profile", d && d.profile);
-                // v2 returns { profile: { id, name, level, ... } }, not the v1
-                // top-level `player_id`. Fall back to player_id just in case
-                // some future endpoint flips back.
-                const id = (d && d.profile && d.profile.id) || (d && d.player_id);
+                const id = d && d.profile && d.profile.id;
                 if (id) {
                     try { localStorage.setItem(LS.userId, String(id)); } catch { /* quota */ }
                     return id;
                 }
-                console.log("[BH donor] getUserId: no id in response");
-            } catch (e) { console.log("[BH donor] getUserId: threw", e); }
+            } catch { /* network */ }
             return null;
         },
 
@@ -640,15 +633,11 @@
         _request(url) {
             return new Promise((resolve) => {
                 const useFetch = IS_PDA || typeof GM_XHR !== "function";
-                console.log("[BH donor] _request", { url, useFetch, isPDA: IS_PDA, hasGM: typeof GM_XHR === "function" });
                 if (useFetch) {
                     fetch(url, { method: "GET", credentials: "omit", cache: "default" })
-                        .then((r) => {
-                            console.log("[BH donor] fetch resp", r.status);
-                            return r.ok ? r.json() : null;
-                        })
-                        .then((d) => { console.log("[BH donor] fetch parsed", d); resolve(d); })
-                        .catch((e) => { console.log("[BH donor] fetch error", e); resolve(null); });
+                        .then((r) => r.ok ? r.json() : null)
+                        .then(resolve)
+                        .catch(() => resolve(null));
                     return;
                 }
                 try {
@@ -657,15 +646,14 @@
                         url,
                         timeout: 10_000,
                         onload: (res) => {
-                            console.log("[BH donor] GM onload", { status: res && res.status, body: res && res.responseText });
                             if (!res || res.status < 200 || res.status >= 300) return resolve(null);
                             try { resolve(JSON.parse(res.responseText)); }
-                            catch (e) { console.log("[BH donor] GM parse err", e); resolve(null); }
+                            catch { resolve(null); }
                         },
-                        onerror: (e) => { console.log("[BH donor] GM onerror", e); resolve(null); },
-                        ontimeout: () => { console.log("[BH donor] GM ontimeout"); resolve(null); },
+                        onerror: () => resolve(null),
+                        ontimeout: () => resolve(null),
                     });
-                } catch (e) { console.log("[BH donor] GM threw", e); resolve(null); }
+                } catch { resolve(null); }
             });
         },
 
@@ -1763,10 +1751,9 @@ table.bh-table{width:100%;border-collapse:collapse}
         _renderDonorBanner(host) {
             // Belt-and-braces — host is created in _renderHunt(); a missing
             // node just means we're being called outside the Hunt tab.
-            if (!host) { console.log("[BH donor] no host"); return; }
+            if (!host) return;
 
             const paint = (status) => {
-                console.log("[BH donor] paint", { status, shouldShow: DonorClient.shouldShow(status) });
                 if (!host.isConnected) return; // tab swapped before fetch resolved
                 if (!DonorClient.shouldShow(status)) {
                     host.innerHTML = "";
@@ -1788,7 +1775,6 @@ table.bh-table{width:100%;border-collapse:collapse}
             // mid-`validateKey` when the panel first renders). Cached after
             // the first successful resolve so subsequent renders are sync.
             DonorClient.getUserId().then((userId) => {
-                console.log("[BH donor] resolved userId", { userId, ackTs: DonorClient._readAck(), cache: DonorClient._readCache() });
                 if (!userId || !host.isConnected) return;
                 const cached = DonorClient.cachedStatus(userId);
                 if (cached) { paint(cached); return; }
