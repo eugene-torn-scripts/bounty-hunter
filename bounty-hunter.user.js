@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.6.7
+// @version      1.6.8
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.6.7";
+    const VERSION = "1.6.8";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -608,18 +608,16 @@
             const key = KeyResolver.resolveTornKey();
             if (!key) return null;
             try {
-                // v2 path: `/user/profile` (Public-key OK). The
-                // `?selections=basic` v1-syntax shim returned `{error}` for
-                // some Public keys despite v2 partially honouring it.
-                const r = await fetch(`https://api.torn.com/v2/user/profile?key=${encodeURIComponent(key)}`);
-                if (!r.ok) return null;
-                const d = await r.json();
+                // Reuse the existing PDA/GM/fetch dispatcher — native fetch
+                // to api.torn.com is unreliable on Torn PDA's webview, which
+                // is why the rest of the script uses PDA_httpGet there.
+                const d = await _httpGetOnceRaw(`https://api.torn.com/v2/user/profile?key=${encodeURIComponent(key)}`);
                 const id = d && d.profile && d.profile.id;
                 if (id) {
                     try { localStorage.setItem(LS.userId, String(id)); } catch { /* quota */ }
                     return id;
                 }
-            } catch { /* network */ }
+            } catch { /* network or HTTP error — silent on this path */ }
             return null;
         },
 
