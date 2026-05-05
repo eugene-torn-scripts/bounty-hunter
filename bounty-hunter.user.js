@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.6.1
+// @version      1.6.2
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -9,6 +9,7 @@
 // @grant        unsafeWindow
 // @connect      api.torn.com
 // @connect      ffscouter.com
+// @connect      eugene-torn-donors.sytnik-evhen.workers.dev
 // @connect      *.workers.dev
 // @license      GPL-3.0-or-later
 // @downloadURL  https://update.greasyfork.org/scripts/574289/Bounty%20Hunter.user.js
@@ -47,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.6.1";
+    const VERSION = "1.6.2";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -605,28 +606,32 @@
         _request(url) {
             return new Promise((resolve) => {
                 const useFetch = IS_PDA || typeof GM_XHR !== "function";
+                console.log("[BH donor] _request", { url, useFetch, isPDA: IS_PDA, hasGM: typeof GM_XHR === "function" });
                 if (useFetch) {
                     fetch(url, { method: "GET", credentials: "omit", cache: "default" })
-                        .then((r) => r.ok ? r.json() : null)
-                        .then(resolve)
-                        .catch(() => resolve(null));
+                        .then((r) => {
+                            console.log("[BH donor] fetch resp", r.status);
+                            return r.ok ? r.json() : null;
+                        })
+                        .then((d) => { console.log("[BH donor] fetch parsed", d); resolve(d); })
+                        .catch((e) => { console.log("[BH donor] fetch error", e); resolve(null); });
                     return;
                 }
                 try {
                     GM_XHR({
                         method: "GET",
                         url,
-                        anonymous: true,
                         timeout: 10_000,
                         onload: (res) => {
+                            console.log("[BH donor] GM onload", { status: res && res.status, body: res && res.responseText });
                             if (!res || res.status < 200 || res.status >= 300) return resolve(null);
                             try { resolve(JSON.parse(res.responseText)); }
-                            catch { resolve(null); }
+                            catch (e) { console.log("[BH donor] GM parse err", e); resolve(null); }
                         },
-                        onerror: () => resolve(null),
-                        ontimeout: () => resolve(null),
+                        onerror: (e) => { console.log("[BH donor] GM onerror", e); resolve(null); },
+                        ontimeout: () => { console.log("[BH donor] GM ontimeout"); resolve(null); },
                     });
-                } catch { resolve(null); }
+                } catch (e) { console.log("[BH donor] GM threw", e); resolve(null); }
             });
         },
 
@@ -1724,13 +1729,15 @@ table.bh-table{width:100%;border-collapse:collapse}
         _renderDonorBanner(host) {
             // Belt-and-braces — host is created in _renderHunt(); a missing
             // node just means we're being called outside the Hunt tab.
-            if (!host) return;
+            if (!host) { console.log("[BH donor] no host"); return; }
             const userId = this.hunter.myUserId;
+            console.log("[BH donor] _renderDonorBanner", { userId, ackTs: DonorClient._readAck(), cache: DonorClient._readCache() });
             // Without our own user id we can't ask the worker about ourselves,
             // and the banner has nothing to say about a stranger.
             if (!userId) { host.innerHTML = ""; return; }
 
             const paint = (status) => {
+                console.log("[BH donor] paint", { status, shouldShow: DonorClient.shouldShow(status) });
                 if (!host.isConnected) return; // tab swapped before fetch resolved
                 if (!DonorClient.shouldShow(status)) {
                     host.innerHTML = "";
