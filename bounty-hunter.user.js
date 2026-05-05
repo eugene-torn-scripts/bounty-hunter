@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.6.3
+// @version      1.6.4
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.6.3";
+    const VERSION = "1.6.4";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -611,7 +611,10 @@
                 const r = await fetch(`https://api.torn.com/v2/user/?selections=basic&key=${encodeURIComponent(key)}`);
                 if (!r.ok) return null;
                 const d = await r.json();
-                const id = d && d.player_id;
+                // v2 returns { profile: { id, name, level, ... } }, not the v1
+                // top-level `player_id`. Fall back to player_id just in case
+                // some future endpoint flips back.
+                const id = (d && d.profile && d.profile.id) || (d && d.player_id);
                 if (id) {
                     try { localStorage.setItem(LS.userId, String(id)); } catch { /* quota */ }
                     return id;
