@@ -15,7 +15,7 @@ Every refresh:
 1. Fetches the full `/torn/bounties` list (paginated — all active bounties, not just the top 100).
 2. Drops anything below your minimum reward.
 3. Asks **FFScouter** for fair-fight scores in a single bulk call. Targets with no FF estimate are excluded (you can't assess them, so there's no point hunting them). Targets outside your FF range are excluded.
-4. Checks each survivor's current status. Keeps `Okay`, plus `Hospital` with less than *N* minutes remaining (configurable — `0` = strict Okay only).
+4. Checks each survivor's current status. Keeps `Okay`, plus `Hospital` with less than *N* minutes remaining (configurable — `0` = strict Okay only). Skips targets in a different country than you (abroad / foreign hospital) — they aren't reachable from your attack page.
 5. Sorts by reward.
 6. Pops a **toast notification** for each newly-matched bounty — click anywhere on the card to jump straight to the claim page.
 
@@ -45,7 +45,7 @@ All configurable in the Settings tab:
 When new matches appear, a small card slides in from the bottom-right corner of the Torn page. Each card shows target name + level, reward, FF, BS estimate, and status; clicking anywhere on the card opens the **attack URL** (`page.php?sid=attack&user2ID=<target_id>`) in a new tab. Torn auto-credits the bounty when the target is hospitalised.
 
 - Auto-dismiss after 15 s; **hover pauses the timer**; the `×` button dismisses instantly.
-- Up to 5 cards on screen at once. If more than 5 fresh matches appear in one refresh, the 6th and beyond collapse into a single `+N more` card that opens the main panel when clicked.
+- Up to 3 cards on screen at once on desktop, 1 on mobile. Extras collapse into a single `+N more` card that opens the main panel when clicked.
 - Zero permission prompts — toasts are just DOM elements. No native OS notifications.
 
 ---
@@ -84,8 +84,14 @@ Two tabs:
 
 - Your Torn API key and your FFScouter key live in `localStorage` (`bh_apiKey`, `bh_ffscouterKey`) under `torn.com`. They are used only against `api.torn.com` and `ffscouter.com`.
 - Inside Torn PDA, the Torn key is provided by PDA and is **not persisted** in `localStorage` — PDA owns it.
-- No backend. No server. Nothing is uploaded anywhere.
+- The donor "thank-you" banner (see *Supporters* below) calls a small Cloudflare Worker (`eugene-torn-donors`) with **only your Torn user id** — no API key, no PII. The worker never sees your key. Response cached in `localStorage` for 6 hours.
 - Uninstalling the script does not automatically clear `localStorage`. Use **Clear Torn key & log out** in Settings first if you want a clean removal.
+
+---
+
+## Supporters
+
+The script is free and will stay free. If it's saved you time and you want to say thanks, send a Xanax to **eugene_s [4192025]** with the word `bounty` or `hunt` in the message — anyone who does will see a small green thank-you banner on the Hunt tab. It's dismissable, and reappears only after a new qualifying donation. Detection runs server-side via a daily cron over my own Torn log, not by parsing yours.
 
 ---
 

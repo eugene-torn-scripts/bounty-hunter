@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.5.1
+// @version      1.6.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -9,6 +9,7 @@
 // @grant        unsafeWindow
 // @connect      api.torn.com
 // @connect      ffscouter.com
+// @connect      *.workers.dev
 // @license      GPL-3.0-or-later
 // @downloadURL  https://update.greasyfork.org/scripts/574289/Bounty%20Hunter.user.js
 // @updateURL    https://update.greasyfork.org/scripts/574289/Bounty%20Hunter.meta.js
@@ -46,14 +47,22 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.5.1";
+    const VERSION = "1.6.0";
     const LS = {
-        apiKey:   "bh_apiKey",
-        ffKey:    "bh_ffscouterKey",
-        settings: "bh_settings",
-        shared:   "bh_shared",   // cross-tab: last refresh result (matches + metadata)
-        debug:    "bh_debug",    // "1" when the debug log is on; undefined/"" otherwise
+        apiKey:    "bh_apiKey",
+        ffKey:     "bh_ffscouterKey",
+        settings:  "bh_settings",
+        shared:    "bh_shared",      // cross-tab: last refresh result (matches + metadata)
+        debug:     "bh_debug",       // "1" when the debug log is on; undefined/"" otherwise
+        donorCache:"bh_donorCache",  // { userId, donor, lastDonationTs, fetchedAt } — 6h client cache
+        donorAck:  "bh_donorAck",    // unix-ts of last donation the user dismissed the banner for
     };
+    // Cloudflare Worker that powers the donor "thank-you" banner. Read-only,
+    // takes only the requester's Torn user id (no API key, no PII), returns
+    // { donor, lastDonationTs }. Cached for 6h in localStorage and shared
+    // across all torn.com tabs (one origin → one localStorage), so a typical
+    // user hits this at most ~4 times/day.
+    const DONOR_API_BASE = "https://eugene-torn-donors.sytnik-evhen.workers.dev";
     // When shared data is younger than (refreshSec * SHARED_FRESH_RATIO) ms,
     // a tab skips its own refresh and free-rides on the writer's result.
     // 0.8 leaves headroom for clock drift between tabs that started close
@@ -545,6 +554,82 @@
         // When the PDA-injected key is in use we don't persist it — it may
         // change per session and the user controls it through PDA settings.
         isPDAKey() { return HAS_PDA_KEY; },
+    };
+
+    // ════════════════════════════════════════════════════════════
+    //  DONOR CLIENT — talks to the eugene-torn-donors CF worker so the
+    //  Hunt tab can show a green "thanks for the Xanax" banner to anyone
+    //  who has tipped this script. Best-effort and silent on failure;
+    //  the banner is a niceness, not a feature path. Cache lives in
+    //  localStorage (shared across all torn.com tabs).
+    // ════════════════════════════════════════════════════════════
+
+    const DonorClient = {
+        CACHE_TTL_MS: 6 * 60 * 60 * 1000,
+        _inflight: null,    // dedupes concurrent fetches across re-renders
+
+        _readCache() {
+            try {
+                const raw = localStorage.getItem(LS.donorCache);
+                return raw ? JSON.parse(raw) : null;
+            } catch { return null; }
+        },
+        _writeCache(obj) {
+            try { localStorage.setItem(LS.donorCache, JSON.stringify(obj)); } catch { /* quota */ }
+        },
+        _readAck() {
+            const v = parseInt(localStorage.getItem(LS.donorAck) || "0", 10);
+            return Number.isFinite(v) ? v : 0;
+        },
+        _writeAck(ts) {
+            try { localStorage.setItem(LS.donorAck, String(ts)); } catch { /* quota */ }
+        },
+
+        // Returns the cached status if it's both fresh and for this userId.
+        // Switching keys (different userId) invalidates the cache so a
+        // freshly-pasted account doesn't see the previous user's banner.
+        cachedStatus(userId) {
+            const c = this._readCache();
+            if (!c || c.userId !== userId) return null;
+            if ((Date.now() - (c.fetchedAt || 0)) > this.CACHE_TTL_MS) return null;
+            return c;
+        },
+
+        async fetchStatus(userId) {
+            if (!userId) return null;
+            if (this._inflight) return this._inflight;
+            const url = `${DONOR_API_BASE}/donor?id=${encodeURIComponent(userId)}&script=bounty`;
+            this._inflight = (async () => {
+                try {
+                    const r = await fetch(url, { method: "GET", credentials: "omit", cache: "default" });
+                    if (!r.ok) return null;
+                    const d = await r.json();
+                    const status = {
+                        userId,
+                        donor: !!d.donor,
+                        lastDonationTs: Number(d.lastDonationTs) || 0,
+                        fetchedAt: Date.now(),
+                    };
+                    this._writeCache(status);
+                    return status;
+                } catch { return null; }
+            })();
+            try { return await this._inflight; }
+            finally { this._inflight = null; }
+        },
+
+        // Banner shows only if the server reports a donation newer than the
+        // ts the user has already dismissed for. New Xanax → ts advances on
+        // the server → banner reappears.
+        shouldShow(status) {
+            if (!status || !status.donor) return false;
+            if (!status.lastDonationTs) return false;
+            return status.lastDonationTs > this._readAck();
+        },
+
+        dismiss(lastDonationTs) {
+            this._writeAck(lastDonationTs || 0);
+        },
     };
 
     // ════════════════════════════════════════════════════════════
@@ -1189,6 +1274,10 @@
 .bh-rl-tips li{margin:2px 0}
 .bh-rl-hint{color:#888;font-size:11px;font-style:italic}
 .bh-paused-banner{background:#1e2833;border:1px solid #3a5a7a;border-left:4px solid #4fa3d4;border-radius:4px;padding:8px 12px;margin:0 0 12px;color:#cfe4f2;font-size:12px}
+.bh-donor-banner{background:linear-gradient(180deg,#1c2a1c,#162216);border:1px solid #2e4a2e;border-left:3px solid #4caf50;border-radius:4px;padding:8px 36px 8px 12px;margin:0 0 12px;color:#a5d6a7;font-size:13px;line-height:1.4;position:relative}
+.bh-donor-banner b{color:#c5e1a5}
+.bh-donor-dismiss{position:absolute;top:4px;right:6px;background:none;border:none;color:#6e836e;font-size:18px;cursor:pointer;padding:0 4px;line-height:1}
+.bh-donor-dismiss:hover{color:#fff}
 #bh-refresh-btn{padding:4px 10px;background:#333;border:1px solid #444;color:#ddd;border-radius:4px;cursor:pointer;font-size:12px}
 #bh-refresh-btn:hover{background:#3a3a3a}
 #bh-refresh-btn:disabled{opacity:.5;cursor:not-allowed}
@@ -1536,6 +1625,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     ? `<div class="bh-paused-banner">⏸ Search disabled — turn it back on in Settings to resume auto-refresh.</div>`
                     : "";
             content.innerHTML = `
+                <div id="bh-donor-host"></div>
                 <div id="bh-status-line">
                     <button id="bh-refresh-btn" class="bh-btn-muted">Refresh now</button>
                     <span>Next refresh in <span id="bh-countdown">${nextIn}</span>s</span>
@@ -1569,6 +1659,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     </table>
                 `}
             `;
+            this._renderDonorBanner(content.querySelector("#bh-donor-host"));
             const btn = content.querySelector("#bh-refresh-btn");
             btn.addEventListener("click", async () => {
                 btn.disabled = true;
@@ -1596,6 +1687,43 @@ table.bh-table{width:100%;border-collapse:collapse}
                     this._renderHunt();
                 });
             });
+        }
+
+        _renderDonorBanner(host) {
+            // Belt-and-braces — host is created in _renderHunt(); a missing
+            // node just means we're being called outside the Hunt tab.
+            if (!host) return;
+            const userId = this.hunter.myUserId;
+            // Without our own user id we can't ask the worker about ourselves,
+            // and the banner has nothing to say about a stranger.
+            if (!userId) { host.innerHTML = ""; return; }
+
+            const paint = (status) => {
+                if (!host.isConnected) return; // tab swapped before fetch resolved
+                if (!DonorClient.shouldShow(status)) {
+                    host.innerHTML = "";
+                    return;
+                }
+                host.innerHTML = `
+                    <div class="bh-donor-banner">
+                        💚 <b>Thank you for your Xanax donation</b> — I really appreciate your support! It keeps the script alive.
+                        <button class="bh-donor-dismiss" title="Dismiss">&times;</button>
+                    </div>
+                `;
+                host.querySelector(".bh-donor-dismiss").addEventListener("click", () => {
+                    DonorClient.dismiss(status.lastDonationTs);
+                    host.innerHTML = "";
+                });
+            };
+
+            const cached = DonorClient.cachedStatus(userId);
+            if (cached) {
+                paint(cached);
+                return;
+            }
+            // Cache miss → fire-and-forget. Keep the host empty until the
+            // fetch resolves so we never flash an empty banner shell.
+            DonorClient.fetchStatus(userId).then(paint);
         }
 
         _sortMatches(list) {

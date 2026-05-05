@@ -48,6 +48,10 @@ Suggested screenshots to capture:
     Auto-skips players under <strong>Torn's New Player Protection</strong> (age &lt; 14d) &mdash; no wasted clicks on
     unattackable newbies
   </li>
+  <li>
+    Skips targets in a <strong>different country</strong> than you (abroad / foreign hospital) &mdash; they aren't
+    reachable from your attack page anyway
+  </li>
   <li>Keeps <strong>Hospital</strong> targets about to release, with a <strong>live countdown</strong> on the badge</li>
   <li>One-click <strong>Attack</strong> button on every row</li>
   <li>
@@ -93,8 +97,8 @@ Suggested screenshots to capture:
 <p>&nbsp;</p>
 <p>
   Every new match pops a card in the bottom-right of the Torn page. Shows name, level, reward, FF, status. Click
-  anywhere on the card &mdash; straight to the attack page. Hover pauses the auto-dismiss. Up to 5 on screen at once;
-  the 6th collapses into a <strong>+N more</strong> card that opens the full list.
+  anywhere on the card &mdash; straight to the attack page. Hover pauses the auto-dismiss. Up to 3 on screen at once
+  on desktop (1 on mobile); extras collapse into a <strong>+N more</strong> card that opens the full list.
 </p>
 <p>&nbsp;</p>
 <p>
@@ -114,6 +118,13 @@ Suggested screenshots to capture:
   <li>Auto-refresh interval (30s / 60s / 2m / 5m / off)</li>
   <li>Toast notifications on/off</li>
   <li>Include targets with <strong>unknown FF</strong> score &mdash; handy if you don't have an FFScouter key</li>
+  <li>
+    <strong>Bounty search</strong> master switch &mdash; freeze the refresh loop without uninstalling
+  </li>
+  <li>
+    <strong>Pause when energy is below N</strong> &mdash; skips fetches when you can't attack anyway. Needs a Torn key
+    with <em>Minimal</em> access or higher (Public-only keys see a hint in Settings prompting a regenerate)
+  </li>
 </ul>
 <p>&nbsp;</p>
 <p>
@@ -176,13 +187,32 @@ Suggested screenshots to capture:
 </p>
 <p>&nbsp;</p>
 <p>
+  <span style="font-size: 16px;"><strong>💚 If you like the script</strong></span>
+</p>
+<p>&nbsp;</p>
+<p>
+  Building and maintaining this is a labour of love &mdash; and a Xanax now and then keeps it going. If you've enjoyed
+  Bounty Hunter and want to say thanks, send a Xanax to
+  <a href="https://www.torn.com/profiles.php?XID=4192025" target="_blank" rel="noopener">eugene_s [4192025]</a>
+  with the word <strong>"bounty"</strong> or <strong>"hunt"</strong> in the message. Donors will see a small green
+  thank-you note on their Hunt tab. Dismissable, no nags.
+</p>
+<p>&nbsp;</p>
+<hr />
+<p>&nbsp;</p>
+<p>
   <span style="font-size: 16px;"><strong>🔒 Privacy</strong></span>
 </p>
 <p>&nbsp;</p>
 <p>
-  Your API keys <strong>never leave your browser</strong>. No backend, no tracking, no third parties &mdash; the script
-  talks directly to <code>api.torn.com</code> and <code>ffscouter.com</code>. On Torn PDA the key is injected by PDA
-  itself and nothing is stored locally.
+  Your API keys <strong>never leave your browser</strong>. The script talks directly to <code>api.torn.com</code> and
+  <code>ffscouter.com</code>. On Torn PDA the key is injected by PDA itself and nothing is stored locally.
+</p>
+<p>&nbsp;</p>
+<p>
+  The only call to anything else is the donor-status check above &mdash; it sends just your Torn user id (no key, no
+  PII) to a small Cloudflare Worker so the thank-you banner can light up. Cached for 6 hours, so a single tab hits the
+  worker at most ~4 times a day.
 </p>
 <p>&nbsp;</p>
 <hr />
