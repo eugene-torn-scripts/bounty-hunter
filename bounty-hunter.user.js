@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.6.9
+// @version      1.6.10
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.6.9";
+    const VERSION = "1.6.10";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -604,31 +604,20 @@
         // page CSP allowlist, so plain fetch works there).
         async getUserId() {
             const stored = localStorage.getItem(LS.userId);
-            if (stored && /^\d+$/.test(stored)) {
-                logDebug(`donor: userId from cache = ${stored}`, "info");
-                return parseInt(stored, 10);
-            }
+            if (stored && /^\d+$/.test(stored)) return parseInt(stored, 10);
             const key = KeyResolver.resolveTornKey();
-            if (!key) {
-                logDebug(`donor: no Torn key — banner skipped`, "warn");
-                return null;
-            }
+            if (!key) return null;
             try {
                 // Reuse the existing PDA/GM/fetch dispatcher — native fetch
                 // to api.torn.com is unreliable on Torn PDA's webview, which
                 // is why the rest of the script uses PDA_httpGet there.
-                logDebug(`donor: resolving userId via /user/profile`, "info");
                 const d = await _httpGetOnceRaw(`https://api.torn.com/v2/user/profile?key=${encodeURIComponent(key)}`);
                 const id = d && d.profile && d.profile.id;
                 if (id) {
                     try { localStorage.setItem(LS.userId, String(id)); } catch { /* quota */ }
-                    logDebug(`donor: userId resolved = ${id}`, "ok");
                     return id;
                 }
-                logDebug(`donor: /user/profile returned no id (keys: ${d ? Object.keys(d).join(",") : "null"})`, "warn");
-            } catch (e) {
-                logDebug(`donor: /user/profile threw ${e && e.message}`, "err");
-            }
+            } catch { /* network or HTTP error — silent on this path */ }
             return null;
         },
 
@@ -639,11 +628,9 @@
         //   - desktop  → GM_xmlhttpRequest (bypasses Torn's page CSP)
         //   - fallback → native fetch (only fires if both above absent)
         async _request(url) {
-            logDebug(`donor: GET ${redactUrl(url)}`, "info");
             try {
                 if (IS_PDA) {
                     const res = await PDA_httpGet(url);
-                    logDebug(`donor: PDA → ${res.status}`, res.status === 200 ? "ok" : "warn");
                     if (res.status < 200 || res.status >= 300) return null;
                     return JSON.parse(res.responseText);
                 }
@@ -654,23 +641,18 @@
                             url,
                             timeout: 10_000,
                             onload: (res) => {
-                                logDebug(`donor: GM → ${res && res.status}`, (res && res.status === 200) ? "ok" : "warn");
                                 if (!res || res.status < 200 || res.status >= 300) return resolve(null);
                                 try { resolve(JSON.parse(res.responseText)); }
                                 catch { resolve(null); }
                             },
-                            onerror: () => { logDebug(`donor: GM error`, "err"); resolve(null); },
-                            ontimeout: () => { logDebug(`donor: GM timeout`, "err"); resolve(null); },
+                            onerror: () => resolve(null),
+                            ontimeout: () => resolve(null),
                         });
                     });
                 }
                 const r = await fetch(url, { method: "GET", credentials: "omit", cache: "default" });
-                logDebug(`donor: fetch → ${r.status}`, r.ok ? "ok" : "warn");
                 return r.ok ? r.json() : null;
-            } catch (e) {
-                logDebug(`donor: threw ${e && e.message}`, "err");
-                return null;
-            }
+            } catch { return null; }
         },
 
         async fetchStatus(userId) {
