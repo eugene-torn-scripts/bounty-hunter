@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.6.8
+// @version      1.6.9
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.6.8";
+    const VERSION = "1.6.9";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -604,55 +604,73 @@
         // page CSP allowlist, so plain fetch works there).
         async getUserId() {
             const stored = localStorage.getItem(LS.userId);
-            if (stored && /^\d+$/.test(stored)) return parseInt(stored, 10);
+            if (stored && /^\d+$/.test(stored)) {
+                logDebug(`donor: userId from cache = ${stored}`, "info");
+                return parseInt(stored, 10);
+            }
             const key = KeyResolver.resolveTornKey();
-            if (!key) return null;
+            if (!key) {
+                logDebug(`donor: no Torn key — banner skipped`, "warn");
+                return null;
+            }
             try {
                 // Reuse the existing PDA/GM/fetch dispatcher — native fetch
                 // to api.torn.com is unreliable on Torn PDA's webview, which
                 // is why the rest of the script uses PDA_httpGet there.
+                logDebug(`donor: resolving userId via /user/profile`, "info");
                 const d = await _httpGetOnceRaw(`https://api.torn.com/v2/user/profile?key=${encodeURIComponent(key)}`);
                 const id = d && d.profile && d.profile.id;
                 if (id) {
                     try { localStorage.setItem(LS.userId, String(id)); } catch { /* quota */ }
+                    logDebug(`donor: userId resolved = ${id}`, "ok");
                     return id;
                 }
-            } catch { /* network or HTTP error — silent on this path */ }
+                logDebug(`donor: /user/profile returned no id (keys: ${d ? Object.keys(d).join(",") : "null"})`, "warn");
+            } catch (e) {
+                logDebug(`donor: /user/profile threw ${e && e.message}`, "err");
+            }
             return null;
         },
 
-        // Torn's page CSP blocks `fetch()` to any host that isn't on its
-        // allowlist (api.torn.com, ffscouter.com via redirect, etc.).
-        // GM_xmlhttpRequest goes through Tampermonkey's own network stack
-        // and bypasses page CSP. PDA's GM polyfill silently drops response
-        // bodies on 200s (see TAT history) so on PDA we fall back to native
-        // fetch — PDA does not enforce torn.com's CSP the same way and the
-        // worker has Access-Control-Allow-Origin: * for that path.
-        _request(url) {
-            return new Promise((resolve) => {
-                const useFetch = IS_PDA || typeof GM_XHR !== "function";
-                if (useFetch) {
-                    fetch(url, { method: "GET", credentials: "omit", cache: "default" })
-                        .then((r) => r.ok ? r.json() : null)
-                        .then(resolve)
-                        .catch(() => resolve(null));
-                    return;
+        // Three transports in order of preference per environment:
+        //   - PDA      → PDA_httpGet (bypasses WebView restrictions; native
+        //                fetch from PDA's webview can be blocked even when
+        //                the BE returns CORS:*)
+        //   - desktop  → GM_xmlhttpRequest (bypasses Torn's page CSP)
+        //   - fallback → native fetch (only fires if both above absent)
+        async _request(url) {
+            logDebug(`donor: GET ${redactUrl(url)}`, "info");
+            try {
+                if (IS_PDA) {
+                    const res = await PDA_httpGet(url);
+                    logDebug(`donor: PDA → ${res.status}`, res.status === 200 ? "ok" : "warn");
+                    if (res.status < 200 || res.status >= 300) return null;
+                    return JSON.parse(res.responseText);
                 }
-                try {
-                    GM_XHR({
-                        method: "GET",
-                        url,
-                        timeout: 10_000,
-                        onload: (res) => {
-                            if (!res || res.status < 200 || res.status >= 300) return resolve(null);
-                            try { resolve(JSON.parse(res.responseText)); }
-                            catch { resolve(null); }
-                        },
-                        onerror: () => resolve(null),
-                        ontimeout: () => resolve(null),
+                if (typeof GM_XHR === "function") {
+                    return await new Promise((resolve) => {
+                        GM_XHR({
+                            method: "GET",
+                            url,
+                            timeout: 10_000,
+                            onload: (res) => {
+                                logDebug(`donor: GM → ${res && res.status}`, (res && res.status === 200) ? "ok" : "warn");
+                                if (!res || res.status < 200 || res.status >= 300) return resolve(null);
+                                try { resolve(JSON.parse(res.responseText)); }
+                                catch { resolve(null); }
+                            },
+                            onerror: () => { logDebug(`donor: GM error`, "err"); resolve(null); },
+                            ontimeout: () => { logDebug(`donor: GM timeout`, "err"); resolve(null); },
+                        });
                     });
-                } catch { resolve(null); }
-            });
+                }
+                const r = await fetch(url, { method: "GET", credentials: "omit", cache: "default" });
+                logDebug(`donor: fetch → ${r.status}`, r.ok ? "ok" : "warn");
+                return r.ok ? r.json() : null;
+            } catch (e) {
+                logDebug(`donor: threw ${e && e.message}`, "err");
+                return null;
+            }
         },
 
         async fetchStatus(userId) {
