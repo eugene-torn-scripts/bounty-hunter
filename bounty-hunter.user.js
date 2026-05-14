@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.7.1
+// @version      1.7.2
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.7.1";
+    const VERSION = "1.7.2";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -727,6 +727,28 @@
             // Invalidate the cross-tab cache — its matches were computed with the
             // previous filters, so neither this tab nor its siblings should reuse it.
             try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
+        }
+
+        // Apply a settings change that originated in another tab (via storage
+        // event). Updates in-memory state and runs the same stop/start
+        // transition the local Settings UI does — but does NOT call
+        // saveSettings (the other tab already persisted), to avoid a write
+        // ping-pong between tabs.
+        applyExternalSettings(next) {
+            this.settings = { ...this.settings, ...next };
+            this.lastMatchIds = new Set();
+            // Stop unconditionally, then let start() self-gate. Mirrors the
+            // local persistFilters() path.
+            this.stop();
+            if (this.settings.searchEnabled && this.settings.refreshSec > 0) {
+                this.pausedReason = null;
+                this.start();
+            } else if (!this.settings.searchEnabled) {
+                this.pausedReason = "disabled";
+            } else {
+                this.pausedReason = null;
+            }
+            if (this.onUpdate) this.onUpdate();
         }
 
         // --- Cross-tab sharing ---------------------------------------------
@@ -2411,13 +2433,22 @@ table.bh-table{width:100%;border-collapse:collapse}
         // Cross-tab sync: when another tab writes fresh match data, adopt it
         // here and re-render. The Hunter's own _tick path separately reads
         // the same store on its next cycle to decide whether to skip its
-        // own fetch.
+        // own fetch. Settings (searchEnabled, refreshSec, filters, …) are
+        // synced via the same storage event but a different key, so
+        // toggling search off in one tab actually stops the loop in others.
         window.addEventListener("storage", (e) => {
-            if (e.key !== LS.shared || !e.newValue) return;
-            try {
-                const payload = JSON.parse(e.newValue);
-                hunter.adoptSharedPayload(payload);
-            } catch { /* ignore malformed writes */ }
+            if (!e.newValue) return;
+            if (e.key === LS.shared) {
+                try {
+                    const payload = JSON.parse(e.newValue);
+                    hunter.adoptSharedPayload(payload);
+                } catch { /* ignore malformed writes */ }
+            } else if (e.key === LS.settings) {
+                try {
+                    const next = JSON.parse(e.newValue);
+                    if (next && typeof next === "object") hunter.applyExternalSettings(next);
+                } catch { /* ignore malformed writes */ }
+            }
         });
 
         const W = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
