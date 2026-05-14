@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.6.10
+// @version      1.7.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.6.10";
+    const VERSION = "1.7.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -709,6 +709,7 @@
             this._running = false;
             this._nextAt = 0;
             this.lastError = null;
+            this.partialFromRateLimit = false; // true when lastMatches comes from a cycle aborted mid-scan by rate limit
             this.myEnergy = null;       // { current, maximum } when pauseOnLowEnergy is on + call succeeded
             this.lastEnergyError = null; // "scope" | "error" | null — drives the settings-panel hint
             this.pausedReason = null;   // "disabled" | "low-energy" | null — drives the Hunt-tab banner
@@ -787,6 +788,7 @@
             this._adoptSharedIdentity(s);
             if (Array.isArray(s.matches)) {
                 this.lastCounts = s.lastCounts || null;
+                this.partialFromRateLimit = false; // _writeShared only fires on full cycles
                 this._applyMatches(s.matches);
             }
             if (this.onUpdate) this.onUpdate();
@@ -832,6 +834,7 @@
                     this._adoptSharedIdentity(shared);
                     this.lastCounts = shared.lastCounts || null;
                     this.lastError = null;
+                    this.partialFromRateLimit = false; // _writeShared only fires on full cycles
                     this._applyMatches(shared.matches || []);
                     if (this.onUpdate) this.onUpdate();
                 } else {
@@ -841,7 +844,9 @@
             } catch (err) {
                 this.lastError = err;
                 if (isRateLimitError(err)) {
-                    logDebug(`refresh aborted — rate limit; keeping ${this.lastMatches.length} prior matches on screen`, "err");
+                    // refresh() already logged the scanned/partial breakdown
+                    // when it knew it; just note the table state here.
+                    logDebug(`refresh aborted — rate limit; ${this.lastMatches.length} match${this.lastMatches.length === 1 ? "" : "es"} on screen${this.partialFromRateLimit ? " (partial)" : ""}`, "err");
                 } else {
                     logDebug(`refresh failed: ${err.message || "error"}`, "err");
                 }
@@ -970,7 +975,10 @@
             const nowSec = Math.floor(Date.now() / 1000);
             const hospWindowSec = this.settings.hospitalMaxMin * 60;
             logDebug(`profiles: need ${byFF.length} (cache will absorb recent lookups)`, "info");
-            const profiles = await this._fetchProfiles(byFF.map((b) => Number(b.target_id)));
+            const { profiles, rateLimitErr: profileRLErr } = await this._fetchProfiles(byFF.map((b) => Number(b.target_id)));
+            // Number of byFF targets we actually have a resolved profile for —
+            // drives the "scanned X of Y" line in the rate-limit banner.
+            counts.scanned = byFF.reduce((n, b) => n + (profiles.has(Number(b.target_id)) ? 1 : 0), 0);
             const matches = [];
             counts.tooNew = 0;
             counts.differentCountry = 0;
@@ -1005,7 +1013,25 @@
             matches.sort((a, b) => b.reward - a.reward);
             counts.matches = matches.length;
 
-            // 4) Diff for toasts + render + cross-tab broadcast.
+            // 4a) Rate-limit hit mid-scan: surface partial results when they're
+            // useful (we either found something this cycle, or had nothing to
+            // begin with — never overwrite a known-good prior list with
+            // something demonstrably worse). Cross-tab share is skipped so
+            // other tabs don't free-ride on partial data.
+            if (profileRLErr) {
+                const replace = matches.length > 0 || this.lastMatches.length === 0;
+                if (replace) {
+                    this.lastCounts = counts;
+                    this._applyMatches(matches);
+                    this.partialFromRateLimit = true;
+                }
+                logDebug(`refresh aborted — rate limit at profile step; scanned ${counts.scanned}/${byFF.length}, ${matches.length} partial match${matches.length === 1 ? "" : "es"}${replace ? " (shown)" : " (kept prior)"}`, "err", performance.now() - refreshStart);
+                // _tick will set lastError and trigger the (banner-bearing) re-render.
+                throw profileRLErr;
+            }
+
+            // 4b) Diff for toasts + render + cross-tab broadcast.
+            this.partialFromRateLimit = false;
             this.lastCounts = counts;
             this._applyMatches(matches);
             this._writeShared();
@@ -1056,16 +1082,16 @@
                             this._statusCache.set(id, { data, fetchedAt: Date.now() });
                         }
                     } catch (err) {
-                        // Rate-limit: stop all workers and bubble up so the
-                        // cycle aborts and prior matches stay on screen.
+                        // Rate-limit: stop all workers and surface what we have.
+                        // The caller decides whether to keep prior matches or
+                        // show a partial cycle, so we don't throw away `out`.
                         if (isRateLimitError(err)) { rateLimitErr = err; return; }
                         // Other per-target errors: row just won't match this cycle.
                     }
                 }
             });
             await Promise.all(workers);
-            if (rateLimitErr) throw rateLimitErr;
-            return out;
+            return { profiles: out, rateLimitErr };
         }
 
         secondsUntilRefresh() {
@@ -1330,6 +1356,7 @@
 .bh-rl-tips{margin:6px 0 6px 20px;padding:0;color:#ddd}
 .bh-rl-tips li{margin:2px 0}
 .bh-rl-hint{color:#888;font-size:11px;font-style:italic}
+.bh-rl-pill{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:8px;background:#ef5350;color:#1a0a0a;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;vertical-align:middle}
 .bh-paused-banner{background:#1e2833;border:1px solid #3a5a7a;border-left:4px solid #4fa3d4;border-radius:4px;padding:8px 12px;margin:0 0 12px;color:#cfe4f2;font-size:12px}
 .bh-donor-banner{background:linear-gradient(180deg,#1c2a1c,#162216);border:1px solid #2e4a2e;border-left:3px solid #4caf50;border-radius:4px;padding:8px 36px 8px 12px;margin:0 0 12px;color:#a5d6a7;font-size:13px;line-height:1.4;position:relative}
 .bh-donor-banner b{color:#c5e1a5}
@@ -1645,15 +1672,27 @@ table.bh-table{width:100%;border-collapse:collapse}
                 if (this._sortCol !== col) return "";
                 return this._sortDir === "asc" ? "sort-asc" : "sort-desc";
             };
-            // Rate-limit banner — prominent, actionable. When prior matches
-            // exist we keep them on screen; when they don't, the banner fully
-            // replaces the misleading "no matches" empty state.
-            const rateLimitTitle = rows.length > 0
-                ? "Rate limit hit — showing previous results"
-                : "Rate limit hit — no results to show";
-            const rateLimitLead = rows.length > 0
-                ? `Torn / FFScouter returned a rate-limit response while processing ${c && c.total != null ? c.total + " " : ""}bounties. The table below is from the last successful refresh and may be slightly stale.`
-                : `Torn / FFScouter returned a rate-limit response before any matches could be confirmed this cycle. No table is shown because no successful refresh has completed yet.`;
+            // Rate-limit banner — prominent, actionable. Three sub-states:
+            //   • partial — this cycle was aborted mid-scan but produced some
+            //     matches; rows are an INCOMPLETE subset of "what's out there"
+            //   • stale prior — this cycle aborted but we kept a prior full scan
+            //   • empty — this cycle aborted with nothing to fall back on
+            const isPartial = rateLimited && !!this.hunter.partialFromRateLimit;
+            const scanned = c && typeof c.scanned === "number" ? c.scanned : null;
+            const afterFF = c && typeof c.afterFF === "number" ? c.afterFF : null;
+            const scanProgress = (scanned != null && afterFF != null)
+                ? `scanned <b>${scanned}</b> of <b>${afterFF}</b> candidate target${afterFF === 1 ? "" : "s"} before the cap`
+                : "before the scan could finish";
+            const rateLimitTitle = isPartial
+                ? "API rate limit hit — partial results shown"
+                : (rows.length > 0
+                    ? "API rate limit hit — showing previous results"
+                    : "API rate limit hit — no results to show");
+            const rateLimitLead = isPartial
+                ? `Torn's API limited us (~100 requests / minute) and we ${scanProgress}. The table below is <b>incomplete</b> — more matches may exist among the targets we couldn't check this cycle.`
+                : (rows.length > 0
+                    ? `Torn's API limited us (~100 requests / minute) ${scanProgress}. The table below is from the <b>last successful refresh</b> and may be slightly stale.`
+                    : `Torn's API limited us (~100 requests / minute) ${scanProgress}. No matches could be confirmed and no prior cycle has succeeded yet.`);
             const rateLimitBanner = rateLimited
                 ? `
                     <div class="bh-rl-banner">
@@ -1661,7 +1700,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                         <div class="bh-rl-body">
                             ${rateLimitLead}
                             <br><br>
-                            <b>To reduce API load, tighten your filters so fewer targets need a per-profile lookup:</b>
+                            <b>Why this happens:</b> wide filters mean every bounty needs a per-target profile lookup, and Torn caps how fast we can do that. <b>Tighten your filters so fewer targets need scanning:</b>
                             <ul class="bh-rl-tips">
                                 <li>Raise <b>Min reward</b> (e.g. $1M+) — skips low-value bounties.</li>
                                 <li>Narrow <b>Fair-fight</b> range — excludes targets outside your combat bracket.</li>
@@ -1686,7 +1725,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                 <div id="bh-status-line">
                     <button id="bh-refresh-btn" class="bh-btn-muted">Refresh now</button>
                     <span>Next refresh in <span id="bh-countdown">${nextIn}</span>s</span>
-                    <span>${rows.length} match${rows.length === 1 ? "" : "es"}</span>
+                    <span>${rows.length} match${rows.length === 1 ? "" : "es"}${isPartial ? ' <span class="bh-rl-pill">partial</span>' : ""}</span>
                     ${errLine}
                     ${ffKeyMissing}
                     ${ffError}
