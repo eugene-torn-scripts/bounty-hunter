@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.7.0
+// @version      1.7.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.7.0";
+    const VERSION = "1.7.1";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -714,7 +714,8 @@
             this.lastEnergyError = null; // "scope" | "error" | null — drives the settings-panel hint
             this.pausedReason = null;   // "disabled" | "low-energy" | null — drives the Hunt-tab banner
             this.onUpdate = null;       // ui sets this
-            this.onToast = null;        // toaster sets this
+            this.onToast = null;        // toaster sets this (new matches → showMany)
+            this.onMatchesApplied = null; // toaster sets this (current target ids → pruneTo)
         }
 
         updateSettings(next) {
@@ -779,6 +780,14 @@
             }
             this.lastMatches = matches;
             this.lastMatchIds = currentIds;
+            // Keep the toast stack in sync with the Hunt-tab table. Without this,
+            // a target that drops out of the match list (claimed elsewhere,
+            // hospital timer expired, or a partial rate-limited cycle that
+            // didn't re-confirm them) would leave its "attack me" toast on
+            // screen for the rest of its 15-second TTL.
+            if (this.onMatchesApplied) {
+                this.onMatchesApplied(new Set(matches.map((m) => Number(m.target_id))));
+            }
         }
 
         // Called by the `storage` event listener when another tab writes new
@@ -1313,6 +1322,16 @@
             for (const c of [...this._cards]) this._remove(c);
             if (this._clearAllEl) { this._clearAllEl.remove(); this._clearAllEl = null; }
         }
+
+        // Remove bounty toasts whose target is no longer in the match set.
+        // The "+N more" overflow card is left alone — it represents a prior
+        // batch rather than a specific target, and times out on its own.
+        pruneTo(currentTargetIds) {
+            for (const c of [...this._cards]) {
+                if (c.isMore || c.isClearAll || c.id == null) continue;
+                if (!currentTargetIds.has(c.id)) this._remove(c);
+            }
+        }
     }
 
     // ════════════════════════════════════════════════════════════
@@ -1539,6 +1558,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             // Hook hunter updates → UI refresh.
             this.hunter.onUpdate = () => { if (this._isOpen()) this._renderActive(); };
             this.hunter.onToast = (bounties) => this.toaster.showMany(bounties);
+            this.hunter.onMatchesApplied = (ids) => this.toaster.pruneTo(ids);
 
             // Countdown ticker — updates both the "next refresh in Xs" header
             // and any live hospital-countdown badges (rows + toasts). Ticks
