@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.8.2
+// @version      1.8.3
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.8.2";
+    const VERSION = "1.8.3";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -2027,11 +2027,18 @@ table.bh-table{width:100%;border-collapse:collapse}
         // Lower floor than the all-fields-on minimum so a card with most
         // fields hidden can shrink down to roughly name + Attack button.
         // ~140 covers a 16-char ellipsised name and the attack pill.
+        //
+        // Reward sits on the head row next to the name, so enabling it costs
+        // horizontal space. FF / Battle stats / Status render as chips on a
+        // separate meta row that flex-wraps — one or two chips re-flow fine
+        // at the narrow floor, so the only time we need extra width is when
+        // all three chips are on at once (and even then the bump just keeps
+        // them on a single row at the floor width).
         _notifWidthFloor(fields) {
             const f = fields || DEFAULT_SETTINGS.notifications.fields;
             let min = 140;
-            if (f.reward !== false)                                                 min += 40;
-            if (f.ff !== false || f.bs !== false || f.status !== false)             min += 30;
+            if (f.reward !== false)                                              min += 40;
+            if (f.ff !== false && f.bs !== false && f.status !== false)          min += 30;
             return min;
         }
 
