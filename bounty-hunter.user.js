@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.8.0
+// @version      1.8.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.8.0";
+    const VERSION = "1.8.1";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -1612,11 +1612,10 @@ table.bh-table{width:100%;border-collapse:collapse}
     transform:none;max-height:100vh;height:100vh}
   .bh-grid-2{grid-template-columns:1fr}
   .bh-table td,.bh-table th{padding:6px 6px;font-size:12px}
-  /* On phones, always stretch full-width regardless of user's position
-     choice (cards are too wide for a phone screen otherwise). Top vs
-     bottom anchor inline-styled by Toaster.applySettings() still wins. */
-  #bh-toasts{left:8px!important;right:8px!important;align-items:stretch!important}
-  .bh-toast{width:auto!important;padding:14px 12px 12px}
+  /* Comfier padding on touch screens; width still follows the user's
+     setting (and max-width:calc(100vw - 32px) on the container clamps
+     anything wider than the screen). */
+  .bh-toast{padding:14px 12px 12px}
   /* ≥44x44 tap target so fingers don't miss into the card (which attacks). */
   .bh-toast-close{top:0;right:0;min-width:44px;min-height:44px;padding:0;font-size:26px;
     display:flex;align-items:center;justify-content:center}
@@ -2053,7 +2052,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                         <div class="bh-field">
                             <label>Card width (px)</label>
                             <input id="bh-set-notif-width" class="bh-input" type="number" min="220" max="640" step="10" value="${n.width}">
-                            <span class="bh-hint">220–640. Phones override to full screen width.</span>
+                            <span class="bh-hint">220–640. Clamps to the viewport on small screens.</span>
                         </div>
                         <div class="bh-field">
                             <label>Max visible at once</label>
