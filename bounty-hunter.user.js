@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.8.1
+// @version      1.8.2
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.8.1";
+    const VERSION = "1.8.2";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -1211,7 +1211,7 @@
             const alignSide = pos.endsWith("right") ? "flex-end" : "flex-start";
             c.style.alignItems = alignSide;
             // Card width — applied per card so it overrides the CSS default.
-            const w = Math.max(220, Math.min(640, Number(n.width) || 300));
+            const w = Math.max(140, Math.min(640, Number(n.width) || 300));
             for (const card of this._cards) {
                 if (card.el) card.el.style.width = `${w}px`;
             }
@@ -1280,7 +1280,7 @@
                 ${metaRow}
                 <button class="bh-toast-attack">Attack →</button>
             `;
-            const w = Math.max(220, Math.min(640, Number(this._notif().width) || 300));
+            const w = Math.max(140, Math.min(640, Number(this._notif().width) || 300));
             el.style.width = `${w}px`;
             const card = { id: Number(b.target_id), el, timer: null, remaining: this._toastTimeoutMs(), enteredAt: 0, isMore: false };
 
@@ -1325,7 +1325,7 @@
                 <div class="bh-toast-more-label">+${count} more</div>
                 <div class="bh-toast-more-hint">Click to open the Hunt list</div>
             `;
-            const w = Math.max(220, Math.min(640, Number(this._notif().width) || 300));
+            const w = Math.max(140, Math.min(640, Number(this._notif().width) || 300));
             el.style.width = `${w}px`;
             const card = { id: null, el, timer: null, remaining: this._toastTimeoutMs(), enteredAt: 0, isMore: true, count };
             el.addEventListener("click", () => {
@@ -2024,12 +2024,24 @@ table.bh-table{width:100%;border-collapse:collapse}
             `;
         }
 
+        // Lower floor than the all-fields-on minimum so a card with most
+        // fields hidden can shrink down to roughly name + Attack button.
+        // ~140 covers a 16-char ellipsised name and the attack pill.
+        _notifWidthFloor(fields) {
+            const f = fields || DEFAULT_SETTINGS.notifications.fields;
+            let min = 140;
+            if (f.reward !== false)                                                 min += 40;
+            if (f.ff !== false || f.bs !== false || f.status !== false)             min += 30;
+            return min;
+        }
+
         // Stand-alone so the HTML template above stays readable. Kept on the
         // class instead of as a free function to keep all settings rendering
         // colocated.
         _renderNotificationsSection(s) {
             const n = s.notifications || DEFAULT_SETTINGS.notifications;
             const f = n.fields || DEFAULT_SETTINGS.notifications.fields;
+            const widthFloor = this._notifWidthFloor(f);
             const POSITIONS = [
                 ["bottom-right", "Bottom right"],
                 ["bottom-left",  "Bottom left"],
@@ -2051,8 +2063,8 @@ table.bh-table{width:100%;border-collapse:collapse}
                         </div>
                         <div class="bh-field">
                             <label>Card width (px)</label>
-                            <input id="bh-set-notif-width" class="bh-input" type="number" min="220" max="640" step="10" value="${n.width}">
-                            <span class="bh-hint">220–640. Clamps to the viewport on small screens.</span>
+                            <input id="bh-set-notif-width" class="bh-input" type="number" min="${widthFloor}" max="640" step="10" value="${n.width}">
+                            <span class="bh-hint" id="bh-notif-width-hint">Min ${widthFloor}, max 640. Lower min available when you hide fields.</span>
                         </div>
                         <div class="bh-field">
                             <label>Max visible at once</label>
@@ -2217,6 +2229,22 @@ table.bh-table{width:100%;border-collapse:collapse}
                 const allowedPositions = new Set(["bottom-right", "bottom-left", "top-right", "top-left"]);
                 const posRaw = $("bh-set-notif-pos").value;
                 const position = allowedPositions.has(posRaw) ? posRaw : "bottom-right";
+                const fieldsObj = {
+                    level:  $("bh-set-notif-f-level").checked,
+                    reward: $("bh-set-notif-f-reward").checked,
+                    ff:     $("bh-set-notif-f-ff").checked,
+                    bs:     $("bh-set-notif-f-bs").checked,
+                    status: $("bh-set-notif-f-status").checked,
+                };
+                // Dynamic width floor: with most fields hidden the card can
+                // shrink down to ~140 px (name + Attack button); each shown
+                // row adds a bit. Sync the input's min/hint so the spinner
+                // stays in step with the user's choices.
+                const widthFloor = this._notifWidthFloor(fieldsObj);
+                const widthInput = $("bh-set-notif-width");
+                widthInput.min = String(widthFloor);
+                const widthHint = $("bh-notif-width-hint");
+                if (widthHint) widthHint.textContent = `Min ${widthFloor}, max 640. Lower min available when you hide fields.`;
                 this.hunter.updateSettings({
                     minPrice: Math.max(0, parseInt($("bh-set-price").value, 10) || 0),
                     hospitalMaxMin: Math.max(0, Math.min(60, parseInt($("bh-set-hosp").value, 10) || 0)),
@@ -2230,16 +2258,10 @@ table.bh-table{width:100%;border-collapse:collapse}
                     minEnergy: Math.max(0, Math.min(1000, parseInt($("bh-set-min-energy").value, 10) || 0)),
                     notifications: {
                         position,
-                        width:      clampInt($("bh-set-notif-width").value,   220, 640, 300),
-                        maxVisible: clampInt($("bh-set-notif-max").value,       1,  20,   3),
-                        timeoutSec: clampInt($("bh-set-notif-timeout").value,   3, 120,  15),
-                        fields: {
-                            level:  $("bh-set-notif-f-level").checked,
-                            reward: $("bh-set-notif-f-reward").checked,
-                            ff:     $("bh-set-notif-f-ff").checked,
-                            bs:     $("bh-set-notif-f-bs").checked,
-                            status: $("bh-set-notif-f-status").checked,
-                        },
+                        width:      clampInt(widthInput.value,                widthFloor, 640, 300),
+                        maxVisible: clampInt($("bh-set-notif-max").value,              1,  20,   3),
+                        timeoutSec: clampInt($("bh-set-notif-timeout").value,          3, 120,  15),
+                        fields: fieldsObj,
                     },
                 });
                 // Reposition / resize the live toast container so the change
