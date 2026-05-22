@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.7.2
+// @version      1.8.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.7.2";
+    const VERSION = "1.8.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -145,6 +145,21 @@
         // Standard attack costs 25 energy; raise if you want to keep a buffer
         // for chains/merits. 0 is treated the same as pauseOnLowEnergy=false.
         minEnergy: 25,
+        // Toast notification appearance. Persisted as a nested object so
+        // users who haven't touched these keep the original defaults forever.
+        notifications: {
+            position: "bottom-right", // bottom-right | bottom-left | top-right | top-left
+            width: 300,               // card width in px (desktop only — mobile is full-width)
+            maxVisible: 3,            // stack cap before "+N more" rolls up the overflow
+            timeoutSec: 15,           // per-card auto-dismiss
+            fields: {                 // which row to render inside each card
+                level: true,
+                reward: true,
+                ff: true,
+                bs: true,
+                status: true,
+            },
+        },
     };
 
     // Torn New Player Protection (https://wiki.torn.com/wiki/New_Player_Protection):
@@ -210,14 +225,6 @@
         return null; // Traveling, or unknown state
     }
 
-    const TOAST_TIMEOUT_MS = 15_000;
-    const TOAST_MAX_VISIBLE_DESKTOP = 3;
-    const TOAST_MAX_VISIBLE_MOBILE = 1;
-    const MOBILE_MEDIA = "(max-width: 768px)";
-    function toastMaxVisible() {
-        try { return window.matchMedia(MOBILE_MEDIA).matches ? TOAST_MAX_VISIBLE_MOBILE : TOAST_MAX_VISIBLE_DESKTOP; }
-        catch { return TOAST_MAX_VISIBLE_DESKTOP; }
-    }
     const STATUS_CACHE_MS = 20_000;
     const STATUS_CONCURRENCY = 3;
 
@@ -286,8 +293,26 @@
     function loadSettings() {
         try {
             const raw = localStorage.getItem(LS.settings);
-            return { ...DEFAULT_SETTINGS, ...(raw ? JSON.parse(raw) : {}) };
-        } catch { return { ...DEFAULT_SETTINGS }; }
+            const stored = raw ? JSON.parse(raw) : {};
+            return mergeSettings(stored);
+        } catch { return mergeSettings({}); }
+    }
+
+    // Shallow-merge top-level keys, but deep-merge the nested `notifications`
+    // object so a partially-stored value (or a value coming in via the
+    // cross-tab storage event after a schema bump) keeps its defaults.
+    function mergeSettings(stored) {
+        const storedNotif = (stored && typeof stored.notifications === "object" && stored.notifications) || {};
+        const storedFields = (storedNotif.fields && typeof storedNotif.fields === "object") ? storedNotif.fields : {};
+        return {
+            ...DEFAULT_SETTINGS,
+            ...stored,
+            notifications: {
+                ...DEFAULT_SETTINGS.notifications,
+                ...storedNotif,
+                fields: { ...DEFAULT_SETTINGS.notifications.fields, ...storedFields },
+            },
+        };
     }
 
     function saveSettings(s) {
@@ -1136,26 +1161,67 @@
     // ════════════════════════════════════════════════════════════
 
     class Toaster {
-        constructor() {
+        // `getSettings` returns the live hunter.settings reference each call,
+        // so user-driven changes in the Settings tab take effect on the next
+        // toast without rewiring anything.
+        constructor(getSettings) {
+            this.getSettings = getSettings || (() => DEFAULT_SETTINGS);
             this.container = null;
             this._cards = []; // { id, el, timer, remaining, enteredAt }
             this._clearAllEl = null;
         }
 
+        _notif() {
+            const s = (this.getSettings && this.getSettings()) || DEFAULT_SETTINGS;
+            return s.notifications || DEFAULT_SETTINGS.notifications;
+        }
+
         ensureContainer() {
-            if (this.container && document.body.contains(this.container)) return;
+            if (this.container && document.body.contains(this.container)) {
+                this.applySettings();
+                return;
+            }
             const c = document.createElement("div");
             c.id = "bh-toasts";
             document.body.appendChild(c);
             this.container = c;
+            this.applySettings();
+        }
+
+        // Apply position/width/alignment from settings to the live container
+        // and any cards already on screen. Safe to call repeatedly — called
+        // from ensureContainer() and from the Settings panel whenever the
+        // notification config changes (locally or cross-tab).
+        applySettings() {
+            if (!this.container) return;
+            const n = this._notif();
+            const pos = n.position || "bottom-right";
+            const c = this.container;
+            // Reset all anchors before re-applying so a top↔bottom flip clears
+            // the previous edge.
+            c.style.top = "";
+            c.style.bottom = "";
+            c.style.left = "";
+            c.style.right = "";
+            if (pos.startsWith("top")) c.style.top = "16px";
+            else c.style.bottom = "16px";
+            if (pos.endsWith("right")) c.style.right = "16px";
+            else c.style.left = "16px";
+            // Children align to the anchor side so the stack hugs the corner.
+            const alignSide = pos.endsWith("right") ? "flex-end" : "flex-start";
+            c.style.alignItems = alignSide;
+            // Card width — applied per card so it overrides the CSS default.
+            const w = Math.max(220, Math.min(640, Number(n.width) || 300));
+            for (const card of this._cards) {
+                if (card.el) card.el.style.width = `${w}px`;
+            }
+            if (this._clearAllEl) this._clearAllEl.style.alignSelf = alignSide;
         }
 
         showMany(bounties) {
             this.ensureContainer();
-            // Responsive cap — fewer alerts on phones where screen real estate
-            // is scarce; more on desktop. Clear-all / overflow cards don't
-            // count toward the bounty slot budget.
-            const maxVisible = toastMaxVisible();
+            // Clear-all / overflow cards don't count toward the bounty slot budget.
+            const maxVisible = Math.max(1, Math.min(20, Number(this._notif().maxVisible) || 3));
             const existingBountyCards = this._cards.filter((c) => !c.isMore && !c.isClearAll).length;
             const slots = Math.max(0, maxVisible - existingBountyCards);
             const toShow = bounties.slice(0, slots);
@@ -1165,9 +1231,21 @@
             this._updateClearAllButton();
         }
 
+        _toastTimeoutMs() {
+            const sec = Number(this._notif().timeoutSec);
+            const clamped = Number.isFinite(sec) ? Math.max(3, Math.min(120, sec)) : 15;
+            return clamped * 1000;
+        }
+
         _showOne(b) {
             const el = document.createElement("div");
             el.className = "bh-toast";
+            const fields = this._notif().fields || DEFAULT_SETTINGS.notifications.fields;
+            const showLevel = fields.level !== false;
+            const showReward = fields.reward !== false;
+            const showFF = fields.ff !== false;
+            const showBS = fields.bs !== false;
+            const showStatus = fields.status !== false;
             const isHosp = b.statusState === "Hospital";
             const statusLabel = isHosp ? fmt.hospLabel(b.hospUntil) : "Okay";
             const statusClass = isHosp ? "bh-badge-hosp" : "bh-badge-ok";
@@ -1175,20 +1253,36 @@
             const countBadge = b.bountyCount > 1
                 ? ` <span class="bh-count">×${b.bountyCount}</span>`
                 : "";
+            const levelSpan = showLevel
+                ? ` <span class="bh-toast-lvl">L${b.target_level}</span>`
+                : "";
+            const rewardCell = showReward
+                ? `<div class="bh-toast-reward">${escHtml(fmt.money(b.reward))}</div>`
+                : "";
+            const ffChip = showFF
+                ? `<span class="bh-chip">FF ${b.ff == null ? "?" : b.ff.toFixed(2)}</span>`
+                : "";
+            const bsChip = (showBS && b.bs)
+                ? `<span class="bh-chip">BS ${escHtml(b.bs)}</span>`
+                : "";
+            const statusChip = showStatus
+                ? `<span class="bh-chip ${statusClass}"${hospAttr}>${statusLabel}</span>`
+                : "";
+            const metaRow = (ffChip || bsChip || statusChip)
+                ? `<div class="bh-toast-meta">${ffChip}${bsChip}${statusChip}</div>`
+                : "";
             el.innerHTML = `
                 <button class="bh-toast-close" title="Dismiss">&times;</button>
                 <div class="bh-toast-head">
-                    <div class="bh-toast-name">${escHtml(b.target_name)} <span class="bh-toast-lvl">L${b.target_level}</span>${countBadge}</div>
-                    <div class="bh-toast-reward">${escHtml(fmt.money(b.reward))}</div>
+                    <div class="bh-toast-name">${escHtml(b.target_name)}${levelSpan}${countBadge}</div>
+                    ${rewardCell}
                 </div>
-                <div class="bh-toast-meta">
-                    <span class="bh-chip">FF ${b.ff == null ? "?" : b.ff.toFixed(2)}</span>
-                    ${b.bs ? `<span class="bh-chip">BS ${escHtml(b.bs)}</span>` : ""}
-                    <span class="bh-chip ${statusClass}"${hospAttr}>${statusLabel}</span>
-                </div>
+                ${metaRow}
                 <button class="bh-toast-attack">Attack →</button>
             `;
-            const card = { id: Number(b.target_id), el, timer: null, remaining: TOAST_TIMEOUT_MS, enteredAt: 0, isMore: false };
+            const w = Math.max(220, Math.min(640, Number(this._notif().width) || 300));
+            el.style.width = `${w}px`;
+            const card = { id: Number(b.target_id), el, timer: null, remaining: this._toastTimeoutMs(), enteredAt: 0, isMore: false };
 
             const dismiss = () => this._remove(card);
             el.querySelector(".bh-toast-close").addEventListener("click", (e) => {
@@ -1231,7 +1325,9 @@
                 <div class="bh-toast-more-label">+${count} more</div>
                 <div class="bh-toast-more-hint">Click to open the Hunt list</div>
             `;
-            const card = { id: null, el, timer: null, remaining: TOAST_TIMEOUT_MS, enteredAt: 0, isMore: true, count };
+            const w = Math.max(220, Math.min(640, Number(this._notif().width) || 300));
+            el.style.width = `${w}px`;
+            const card = { id: null, el, timer: null, remaining: this._toastTimeoutMs(), enteredAt: 0, isMore: true, count };
             el.addEventListener("click", () => {
                 if (window.__bhUI) window.__bhUI.toggle(true);
                 this._remove(card);
@@ -1315,6 +1411,10 @@
             btn.className = "bh-toast-clear-btn";
             btn.textContent = "✕ Clear all";
             btn.addEventListener("click", (e) => { e.stopPropagation(); this.clearAll(); });
+            // Pin to the same edge as the stack (right for *-right positions,
+            // left for *-left) so the pill always sits over the toasts.
+            const pos = this._notif().position || "bottom-right";
+            btn.style.alignSelf = pos.endsWith("right") ? "flex-end" : "flex-start";
             this.container.appendChild(btn);
             this._clearAllEl = btn;
         }
@@ -1471,8 +1571,11 @@ table.bh-table{width:100%;border-collapse:collapse}
 #bh-auth h3{margin:0 0 12px;color:#fff}
 #bh-auth .bh-auth-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 
-/* Toasts */
-#bh-toasts{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column-reverse;gap:8px;
+/* Toasts — anchor (top/bottom/left/right), align-items, and per-card width
+   are all set inline by Toaster.applySettings() based on user-configured
+   notifications.position / .width. Defaults match the legacy bottom-right /
+   300px look. */
+#bh-toasts{position:fixed;display:flex;flex-direction:column-reverse;gap:8px;
   z-index:2147483646;pointer-events:none;max-width:calc(100vw - 32px)}
 .bh-toast{pointer-events:auto;width:300px;max-width:100%;background:#1e1e1e;border:1px solid #444;border-left:4px solid #ef5350;
   border-radius:8px;padding:10px 12px;color:#ddd;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
@@ -1509,8 +1612,11 @@ table.bh-table{width:100%;border-collapse:collapse}
     transform:none;max-height:100vh;height:100vh}
   .bh-grid-2{grid-template-columns:1fr}
   .bh-table td,.bh-table th{padding:6px 6px;font-size:12px}
-  #bh-toasts{left:8px;right:8px;bottom:8px;align-items:stretch}
-  .bh-toast{width:auto;padding:14px 12px 12px}
+  /* On phones, always stretch full-width regardless of user's position
+     choice (cards are too wide for a phone screen otherwise). Top vs
+     bottom anchor inline-styled by Toaster.applySettings() still wins. */
+  #bh-toasts{left:8px!important;right:8px!important;align-items:stretch!important}
+  .bh-toast{width:auto!important;padding:14px 12px 12px}
   /* ≥44x44 tap target so fingers don't miss into the card (which attacks). */
   .bh-toast-close{top:0;right:0;min-width:44px;min-height:44px;padding:0;font-size:26px;
     display:flex;align-items:center;justify-content:center}
@@ -1919,6 +2025,65 @@ table.bh-table{width:100%;border-collapse:collapse}
             `;
         }
 
+        // Stand-alone so the HTML template above stays readable. Kept on the
+        // class instead of as a free function to keep all settings rendering
+        // colocated.
+        _renderNotificationsSection(s) {
+            const n = s.notifications || DEFAULT_SETTINGS.notifications;
+            const f = n.fields || DEFAULT_SETTINGS.notifications.fields;
+            const POSITIONS = [
+                ["bottom-right", "Bottom right"],
+                ["bottom-left",  "Bottom left"],
+                ["top-right",    "Top right"],
+                ["top-left",     "Top left"],
+            ];
+            const posOpts = POSITIONS.map(([v, label]) =>
+                `<option value="${v}"${n.position === v ? " selected" : ""}>${label}</option>`).join("");
+            const checked = (v) => v ? " checked" : "";
+            return `
+                <div class="bh-section">
+                    <h3>Notifications</h3>
+                    <label class="bh-check"><input type="checkbox" id="bh-set-toasts"${checked(s.toastsEnabled)}> Show toast for new matches</label>
+                    <p class="bh-hint">Master switch — when off, the script still fills the Hunt tab but never pops a toast.</p>
+                    <div class="bh-grid-2" style="margin-top:8px">
+                        <div class="bh-field">
+                            <label>Position</label>
+                            <select id="bh-set-notif-pos" class="bh-select">${posOpts}</select>
+                        </div>
+                        <div class="bh-field">
+                            <label>Card width (px)</label>
+                            <input id="bh-set-notif-width" class="bh-input" type="number" min="220" max="640" step="10" value="${n.width}">
+                            <span class="bh-hint">220–640. Phones override to full screen width.</span>
+                        </div>
+                        <div class="bh-field">
+                            <label>Max visible at once</label>
+                            <input id="bh-set-notif-max" class="bh-input" type="number" min="1" max="20" step="1" value="${n.maxVisible}">
+                            <span class="bh-hint">Extra matches roll up into a single "+N more" card.</span>
+                        </div>
+                        <div class="bh-field">
+                            <label>Auto-dismiss (seconds)</label>
+                            <input id="bh-set-notif-timeout" class="bh-input" type="number" min="3" max="120" step="1" value="${n.timeoutSec}">
+                            <span class="bh-hint">Hovering a card pauses its timer.</span>
+                        </div>
+                    </div>
+                    <div class="bh-field" style="margin-top:4px">
+                        <label>Show on each card</label>
+                        <div class="bh-row-actions" style="gap:14px">
+                            <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-level"${checked(f.level !== false)}> Level</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-reward"${checked(f.reward !== false)}> Reward</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-ff"${checked(f.ff !== false)}> Fair fight</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-bs"${checked(f.bs !== false)}> Battle stats</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-status"${checked(f.status !== false)}> Status</label>
+                        </div>
+                        <span class="bh-hint">The target name and the Attack button are always shown.</span>
+                    </div>
+                    <div class="bh-row-actions" style="margin-top:8px">
+                        <button id="bh-notif-preview" class="bh-btn bh-btn-muted">Preview toast</button>
+                    </div>
+                </div>
+            `;
+        }
+
         _renderSettings() {
             const content = this._panel.querySelector("#bh-content");
             const s = this.hunter.settings;
@@ -1984,12 +2149,13 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <span class="bh-hint">Honors Torn's global bounty-cache delay. 60 s is comfortably under the rate limit.</span>
                         </div>
                         <div class="bh-field">
-                            <label>Notifications</label>
-                            <label class="bh-check"><input type="checkbox" id="bh-set-toasts"${s.toastsEnabled ? " checked" : ""}> Show toast for new matches</label>
+                            <label>Matches</label>
                             <label class="bh-check"><input type="checkbox" id="bh-set-unkff"${s.includeUnknownFF ? " checked" : ""}> Include targets with unknown FF score</label>
                         </div>
                     </div>
                 </div>
+
+                ${this._renderNotificationsSection(s)}
 
                 <div class="bh-section">
                     <h3>Torn API key</h3>
@@ -2039,11 +2205,19 @@ table.bh-table{width:100%;border-collapse:collapse}
             `;
 
             const $ = (id) => content.querySelector("#" + id);
+            const clampInt = (raw, lo, hi, fallback) => {
+                const n = parseInt(raw, 10);
+                if (!Number.isFinite(n)) return fallback;
+                return Math.max(lo, Math.min(hi, n));
+            };
             const persistFilters = () => {
                 const minFF = parseFloat($("bh-set-ffmin").value);
                 const maxFF = parseFloat($("bh-set-ffmax").value);
                 const cleanMin = Number.isFinite(minFF) ? Math.max(1, minFF) : 1.0;
                 const cleanMax = Number.isFinite(maxFF) ? Math.max(cleanMin, maxFF) : cleanMin;
+                const allowedPositions = new Set(["bottom-right", "bottom-left", "top-right", "top-left"]);
+                const posRaw = $("bh-set-notif-pos").value;
+                const position = allowedPositions.has(posRaw) ? posRaw : "bottom-right";
                 this.hunter.updateSettings({
                     minPrice: Math.max(0, parseInt($("bh-set-price").value, 10) || 0),
                     hospitalMaxMin: Math.max(0, Math.min(60, parseInt($("bh-set-hosp").value, 10) || 0)),
@@ -2055,7 +2229,23 @@ table.bh-table{width:100%;border-collapse:collapse}
                     searchEnabled: $("bh-set-enabled").checked,
                     pauseOnLowEnergy: $("bh-set-pause-energy").checked,
                     minEnergy: Math.max(0, Math.min(1000, parseInt($("bh-set-min-energy").value, 10) || 0)),
+                    notifications: {
+                        position,
+                        width:      clampInt($("bh-set-notif-width").value,   220, 640, 300),
+                        maxVisible: clampInt($("bh-set-notif-max").value,       1,  20,   3),
+                        timeoutSec: clampInt($("bh-set-notif-timeout").value,   3, 120,  15),
+                        fields: {
+                            level:  $("bh-set-notif-f-level").checked,
+                            reward: $("bh-set-notif-f-reward").checked,
+                            ff:     $("bh-set-notif-f-ff").checked,
+                            bs:     $("bh-set-notif-f-bs").checked,
+                            status: $("bh-set-notif-f-status").checked,
+                        },
+                    },
                 });
+                // Reposition / resize the live toast container so the change
+                // is visible immediately even if no new toasts are firing.
+                this.toaster.applySettings();
                 // Stop unconditionally, then let start() self-gate on
                 // searchEnabled + refreshSec. Handles all four transitions
                 // (on→on, on→off, off→on, off→off) with one code path.
@@ -2069,8 +2259,29 @@ table.bh-table{width:100%;border-collapse:collapse}
                 }
             };
             ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-unkff",
-             "bh-set-enabled", "bh-set-pause-energy", "bh-set-min-energy"]
+             "bh-set-enabled", "bh-set-pause-energy", "bh-set-min-energy",
+             "bh-set-notif-pos", "bh-set-notif-width", "bh-set-notif-max", "bh-set-notif-timeout",
+             "bh-set-notif-f-level", "bh-set-notif-f-reward", "bh-set-notif-f-ff", "bh-set-notif-f-bs", "bh-set-notif-f-status"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
+
+            // "Preview toast" — pop a fake bounty with realistic-looking
+            // fields so the user can verify position / width / fields without
+            // waiting for a real match. Persists current settings first so
+            // the preview reflects unsaved tweaks.
+            $("bh-notif-preview").addEventListener("click", () => {
+                persistFilters();
+                this.toaster.showMany([{
+                    target_id: -1,
+                    target_name: "Preview Target",
+                    target_level: 50,
+                    reward: 2_500_000,
+                    ff: 2.75,
+                    bs: "12.3k",
+                    statusState: "Okay",
+                    hospUntil: 0,
+                    bountyCount: 1,
+                }]);
+            });
 
             const setStatus = (elId, kind, msg) => {
                 const el = $(elId);
@@ -2421,7 +2632,7 @@ table.bh-table{width:100%;border-collapse:collapse}
         const initialKey = KeyResolver.resolveTornKey();
         const api = new TornAPI(initialKey || "");
         const hunter = new Hunter(api);
-        const toaster = new Toaster();
+        const toaster = new Toaster(() => hunter.settings);
         const ui = new UI(hunter, toaster);
 
         // Toaster needs a way to reach the UI for its "+N more" card.
@@ -2446,7 +2657,15 @@ table.bh-table{width:100%;border-collapse:collapse}
             } else if (e.key === LS.settings) {
                 try {
                     const next = JSON.parse(e.newValue);
-                    if (next && typeof next === "object") hunter.applyExternalSettings(next);
+                    if (next && typeof next === "object") {
+                        hunter.applyExternalSettings(next);
+                        // Cross-tab notification re-positioning: only useful if
+                        // the container already exists (i.e. a toast was shown
+                        // at least once in this tab); otherwise applySettings
+                        // is a no-op and the next showMany picks up the new
+                        // values from ensureContainer().
+                        toaster.applySettings();
+                    }
                 } catch { /* ignore malformed writes */ }
             }
         });
