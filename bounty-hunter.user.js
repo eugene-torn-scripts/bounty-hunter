@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.8.3
+// @version      1.9.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.8.3";
+    const VERSION = "1.9.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -58,6 +58,7 @@
         donorCache:"bh_donorCache",  // { userId, donor, lastDonationTs, fetchedAt } — 6h client cache
         donorAck:  "bh_donorAck",    // unix-ts of last donation the user dismissed the banner for
         userId:    "bh_userId",      // resolved Torn user id (cached so DonorClient doesn't race Hunter.start)
+        blacklist: "bh_blacklist",   // { "<id>": { name, note, addedAt } } — players excluded from matches
     };
     // Cloudflare Worker that powers the donor "thank-you" banner. Read-only,
     // takes only the requester's Torn user id (no API key, no PII), returns
@@ -158,6 +159,7 @@
                 ff: true,
                 bs: true,
                 status: true,
+                blacklist: false,     // small "🚫 Blacklist" button next to Attack
             },
         },
     };
@@ -317,6 +319,91 @@
 
     function saveSettings(s) {
         localStorage.setItem(LS.settings, JSON.stringify(s));
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  BLACKLIST — per-browser local list of Torn user ids whose
+    //  bounties never appear in the Hunt list or as a toast. Schema:
+    //    { "<numericId>": { name: string|null, note: string, addedAt: number } }
+    //  Stored under LS.blacklist; cross-tab sync via the storage event.
+    // ════════════════════════════════════════════════════════════
+
+    function loadBlacklist() {
+        try {
+            const raw = localStorage.getItem(LS.blacklist);
+            if (!raw) return {};
+            const parsed = JSON.parse(raw);
+            return (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {};
+        } catch { return {}; }
+    }
+
+    function saveBlacklist(map) {
+        try { localStorage.setItem(LS.blacklist, JSON.stringify(map)); } catch { /* quota */ }
+    }
+
+    function blAddEntry(map, id, name) {
+        const key = String(Number(id));
+        if (!/^\d+$/.test(key) || key === "0") return false;
+        const existing = map[key];
+        map[key] = {
+            name: (existing && existing.name) || (name ? String(name) : null),
+            note: existing ? existing.note : "",
+            addedAt: existing ? existing.addedAt : Math.floor(Date.now() / 1000),
+        };
+        return true;
+    }
+
+    function blSetName(map, id, name) {
+        const key = String(Number(id));
+        if (!map[key] || !name) return false;
+        if (map[key].name === name) return false;
+        map[key].name = String(name);
+        return true;
+    }
+
+    function blSetNote(map, id, note) {
+        const key = String(Number(id));
+        if (!map[key]) return false;
+        map[key].note = String(note || "");
+        return true;
+    }
+
+    function blRemove(map, id) {
+        const key = String(Number(id));
+        if (!map[key]) return false;
+        delete map[key];
+        return true;
+    }
+
+    // Permissive importer — accepts a JSON object exported from this script,
+    // a JSON array of bare ids, or a plain comma/whitespace-separated id
+    // list. Returns the number of entries added (existing entries are kept).
+    function blImport(map, text) {
+        const t = String(text || "").trim();
+        if (!t) return 0;
+        let added = 0;
+        const tryAdd = (id, name) => { if (blAddEntry(map, id, name)) added++; };
+        try {
+            const parsed = JSON.parse(t);
+            if (Array.isArray(parsed)) {
+                for (const v of parsed) tryAdd(v);
+                return added;
+            }
+            if (parsed && typeof parsed === "object") {
+                for (const [k, v] of Object.entries(parsed)) {
+                    tryAdd(k, v && v.name);
+                    if (v && map[String(Number(k))]) {
+                        if (typeof v.note === "string") map[String(Number(k))].note = v.note;
+                        if (typeof v.addedAt === "number") map[String(Number(k))].addedAt = v.addedAt;
+                    }
+                }
+                return added;
+            }
+        } catch { /* fall through to plain-id parse */ }
+        for (const tok of t.split(/[\s,;]+/)) {
+            if (/^\d+$/.test(tok)) tryAdd(tok);
+        }
+        return added;
     }
 
     // Open a Torn URL in a way that works on desktop and inside the PDA webview.
@@ -722,6 +809,7 @@
         constructor(api) {
             this.api = api;
             this.settings = loadSettings();
+            this.blacklist = loadBlacklist();
             this.myUserId = null;
             this.myUserLevel = null;
             this.myUserAge = null;      // days since our own signup — drives NPP rule
@@ -752,6 +840,101 @@
             // Invalidate the cross-tab cache — its matches were computed with the
             // previous filters, so neither this tab nor its siblings should reuse it.
             try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
+        }
+
+        // --- Blacklist -----------------------------------------------------
+        isBlacklisted(id) {
+            if (id == null) return false;
+            return Object.prototype.hasOwnProperty.call(this.blacklist, String(Number(id)));
+        }
+
+        // Add a player to the blacklist and immediately strip any of their
+        // bounties from this tab's live match list. The cross-tab storage
+        // event will broadcast the same prune to sibling tabs.
+        addToBlacklist(id, name) {
+            const ok = blAddEntry(this.blacklist, id, name);
+            if (!ok) return false;
+            saveBlacklist(this.blacklist);
+            this._stripBlacklistedFromMatches();
+            try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
+            if (this.onUpdate) this.onUpdate();
+            return true;
+        }
+
+        removeFromBlacklist(id) {
+            const ok = blRemove(this.blacklist, id);
+            if (!ok) return false;
+            saveBlacklist(this.blacklist);
+            // The target may not be back on the bounty board, and we don't
+            // want to burn a refresh just to "maybe" surface them — the next
+            // tick will pick them up naturally if they reappear.
+            try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
+            if (this.onUpdate) this.onUpdate();
+            return true;
+        }
+
+        setBlacklistNote(id, note) {
+            const ok = blSetNote(this.blacklist, id, note);
+            if (!ok) return false;
+            saveBlacklist(this.blacklist);
+            return true;
+        }
+
+        // Import a JSON / id-list blob from the Settings tab. Merges into the
+        // existing map (doesn't wipe). Returns the number of entries added.
+        importBlacklist(text) {
+            const before = Object.keys(this.blacklist).length;
+            const added = blImport(this.blacklist, text);
+            if (added > 0 || Object.keys(this.blacklist).length !== before) {
+                saveBlacklist(this.blacklist);
+                this._stripBlacklistedFromMatches();
+                try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
+                if (this.onUpdate) this.onUpdate();
+            }
+            return added;
+        }
+
+        clearBlacklist() {
+            this.blacklist = {};
+            saveBlacklist(this.blacklist);
+            try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
+            if (this.onUpdate) this.onUpdate();
+        }
+
+        // Called by the storage-event listener when another tab mutated the
+        // blacklist. Re-reads from LS and re-prunes our visible matches.
+        applyExternalBlacklist() {
+            this.blacklist = loadBlacklist();
+            this._stripBlacklistedFromMatches();
+            if (this.onUpdate) this.onUpdate();
+        }
+
+        // Backfill missing display names from anything we observe on the
+        // bounty board. Saves only when at least one name changed so we
+        // don't write the same JSON every tick.
+        _backfillBlacklistNames(bounties) {
+            let changed = false;
+            for (const b of bounties) {
+                const key = String(Number(b.target_id));
+                const entry = this.blacklist[key];
+                if (!entry || entry.name === b.target_name) continue;
+                if (blSetName(this.blacklist, b.target_id, b.target_name)) changed = true;
+            }
+            if (changed) saveBlacklist(this.blacklist);
+        }
+
+        // Drop currently-shown matches whose target is now blacklisted, then
+        // re-run the toast-pruning callback so any blacklisted toast vanishes
+        // from the stack immediately. Cheaper than a full refresh.
+        _stripBlacklistedFromMatches() {
+            const before = this.lastMatches.length;
+            const filtered = this.lastMatches.filter((m) => !this.isBlacklisted(m.target_id));
+            if (filtered.length === before) return;
+            this.lastMatches = filtered;
+            this.lastMatchIds = new Set(filtered.map((m) => `${m.target_id}|${m.reward}`));
+            if (this.onMatchesApplied) {
+                this.onMatchesApplied(new Set(filtered.map((m) => Number(m.target_id))));
+            }
         }
 
         // Apply a settings change that originated in another tab (via storage
@@ -993,14 +1176,24 @@
                 matches: 0,
             };
 
-            // 1) Price + self filter. Age-based "new-account" filter happens
+            // Opportunistically backfill blacklist entries' display names from
+            // anything Torn returned this cycle. Cheap (one Map lookup per
+            // bounty) and means blacklisted entries no longer show up as
+            // "(unknown)" once the user has seen the target's bounty once.
+            this._backfillBlacklistNames(dedupedBounties);
+
+            // 1) Price + self + blacklist filter. Blacklist runs first so we
+            // never burn FFScouter / profile API budget on a player the user
+            // has chosen to exclude. Age-based "new-account" filter happens
             // later (in step 3) since target age requires a per-user profile
             // fetch anyway.
-            const byBasic = dedupedBounties.filter((b) =>
+            const afterPriceAndSelf = dedupedBounties.filter((b) =>
                 b.reward >= this.settings.minPrice
                 && (this.myUserId == null || b.target_id !== this.myUserId)
             );
+            const byBasic = afterPriceAndSelf.filter((b) => !this.isBlacklisted(b.target_id));
             counts.afterBasic = byBasic.length;
+            counts.blacklisted = afterPriceAndSelf.length - byBasic.length;
 
             // 2) Bulk FFScouter — keep only rows with a known FF in range.
             const ffKey = KeyResolver.getFFKey();
@@ -1218,6 +1411,40 @@
             if (this._clearAllEl) this._clearAllEl.style.alignSelf = alignSide;
         }
 
+        // Lightweight informational card with one optional action button —
+        // used by the Hunt-list / toast "Blacklisted X — Undo" flow. Bypasses
+        // the maxVisible cap because info cards are user-triggered (rare).
+        showAction({ message, actionLabel, onAction, timeoutMs }) {
+            this.ensureContainer();
+            const el = document.createElement("div");
+            el.className = "bh-toast bh-toast-info";
+            const w = Math.max(140, Math.min(640, Number(this._notif().width) || 300));
+            el.style.width = `${w}px`;
+            el.innerHTML = `
+                <button class="bh-toast-close" title="Dismiss">&times;</button>
+                <div class="bh-toast-info-msg">${escHtml(message)}</div>
+                ${actionLabel ? `<button class="bh-toast-info-action">${escHtml(actionLabel)}</button>` : ""}
+            `;
+            const remaining = Number.isFinite(timeoutMs) ? timeoutMs : 5000;
+            const card = { id: null, el, timer: null, remaining, enteredAt: 0, isMore: false, isInfo: true };
+            const dismiss = () => this._remove(card);
+            el.querySelector(".bh-toast-close").addEventListener("click", (e) => { e.stopPropagation(); dismiss(); });
+            const actionBtn = el.querySelector(".bh-toast-info-action");
+            if (actionBtn) {
+                actionBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    try { if (onAction) onAction(); } catch { /* noop */ }
+                    dismiss();
+                });
+            }
+            el.addEventListener("pointerenter", () => this._pauseTimer(card));
+            el.addEventListener("pointerleave", () => this._resumeTimer(card));
+            this._resumeTimer(card);
+            this.container.appendChild(el);
+            this._cards.push(card);
+            this._updateClearAllButton();
+        }
+
         showMany(bounties) {
             this.ensureContainer();
             // Clear-all / overflow cards don't count toward the bounty slot budget.
@@ -1246,6 +1473,7 @@
             const showFF = fields.ff !== false;
             const showBS = fields.bs !== false;
             const showStatus = fields.status !== false;
+            const showBlacklist = fields.blacklist === true;
             const isHosp = b.statusState === "Hospital";
             const statusLabel = isHosp ? fmt.hospLabel(b.hospUntil) : "Okay";
             const statusClass = isHosp ? "bh-badge-hosp" : "bh-badge-ok";
@@ -1271,6 +1499,12 @@
             const metaRow = (ffChip || bsChip || statusChip)
                 ? `<div class="bh-toast-meta">${ffChip}${bsChip}${statusChip}</div>`
                 : "";
+            const actionsRow = showBlacklist
+                ? `<div class="bh-toast-actions">
+                       <button class="bh-toast-attack">Attack →</button>
+                       <button class="bh-toast-blacklist" title="Add to blacklist">🚫</button>
+                   </div>`
+                : `<button class="bh-toast-attack">Attack →</button>`;
             el.innerHTML = `
                 <button class="bh-toast-close" title="Dismiss">&times;</button>
                 <div class="bh-toast-head">
@@ -1278,7 +1512,7 @@
                     ${rewardCell}
                 </div>
                 ${metaRow}
-                <button class="bh-toast-attack">Attack →</button>
+                ${actionsRow}
             `;
             const w = Math.max(140, Math.min(640, Number(this._notif().width) || 300));
             el.style.width = `${w}px`;
@@ -1295,6 +1529,15 @@
                 dismiss();
             };
             el.querySelector(".bh-toast-attack").addEventListener("click", attack);
+            const blBtn = el.querySelector(".bh-toast-blacklist");
+            if (blBtn) {
+                blBtn.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dismiss();
+                    if (window.__bhUI) window.__bhUI._blacklistWithUndo(b.target_id, b.target_name);
+                });
+            }
 
             // Desktop: whole card is clickable for convenience. Touch devices:
             // require the explicit Attack button so a mis-tap near the close
@@ -1601,6 +1844,30 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-toast-more{border-left-color:#888;text-align:center}
 .bh-toast-more-label{color:#fff;font-weight:700;font-size:16px}
 .bh-toast-more-hint{color:#888;font-size:11px;margin-top:2px}
+.bh-toast-info{border-left-color:#888;cursor:default}
+.bh-toast-info-msg{color:#ddd;margin:0 18px 6px 0;font-size:13px}
+.bh-toast-info-action{padding:6px 10px;background:#333;color:#fff;border:1px solid #555;border-radius:4px;cursor:pointer;font-weight:600;font-size:12px}
+.bh-toast-info-action:hover{background:#3a3a3a;border-color:#777}
+.bh-toast-actions{display:flex;gap:6px;align-items:stretch}
+.bh-toast-actions .bh-toast-attack{flex:1;width:auto}
+.bh-toast-blacklist{padding:6px 10px;background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:4px;cursor:pointer;font-size:14px;line-height:1}
+.bh-toast-blacklist:hover{background:#3a2a2a;border-color:#a44}
+
+/* Hunt-list row blacklist icon — sits next to Attack in the actions cell. */
+.bh-row-actions-cell{white-space:nowrap}
+.bh-row-blacklist{margin-left:6px;padding:4px 8px;background:#2a2a2a;color:#ccc;border:1px solid #444;border-radius:4px;cursor:pointer;font-size:13px;line-height:1;vertical-align:middle}
+.bh-row-blacklist:hover{background:#3a2a2a;border-color:#a44;color:#fff}
+
+/* Blacklist section (Script tab) */
+.bh-bl-banner{background:#2a2418;border:1px solid #5a4a28;border-left:4px solid #c08030;border-radius:4px;padding:8px 12px;margin:0 0 12px;color:#eed8b0;font-size:12px;line-height:1.4}
+.bh-bl-textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;resize:vertical;min-height:60px}
+.bh-bl-row{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border:1px solid #2a2a2a;border-radius:4px;margin-bottom:6px;background:#1e1e1e}
+.bh-bl-row:hover{border-color:#3a3a3a}
+.bh-bl-row-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.bh-bl-row-id{color:#888;font-size:11px;font-variant-numeric:tabular-nums}
+.bh-bl-row-date{color:#666;font-size:11px;margin-left:auto}
+.bh-bl-row-remove{padding:3px 8px!important;font-size:11px!important}
+.bh-bl-row-note{font-size:12px;min-height:28px;padding:4px 8px;resize:vertical}
 .bh-toast-clear-btn{pointer-events:auto;align-self:flex-end;background:rgba(30,30,30,0.9);color:#aaa;
   border:1px solid #444;border-radius:14px;padding:3px 10px;font-size:11px;font-weight:600;
   letter-spacing:.5px;text-transform:uppercase;cursor:pointer;font-family:inherit;
@@ -1664,7 +1931,9 @@ table.bh-table{width:100%;border-collapse:collapse}
                 </div>
                 <div id="bh-tabs">
                     <div class="bh-tab active" data-tab="hunt">Hunt</div>
-                    <div class="bh-tab" data-tab="settings">Settings</div>
+                    <div class="bh-tab" data-tab="script">Script</div>
+                    <div class="bh-tab" data-tab="uiux">UI/UX</div>
+                    <div class="bh-tab" data-tab="api">API</div>
                 </div>
                 <div id="bh-content"></div>
             `;
@@ -1720,8 +1989,15 @@ table.bh-table{width:100%;border-collapse:collapse}
 
         _renderActive() {
             if (!this._authed) { this._renderAuth(); return; }
-            if (this.activeTab === "hunt") this._renderHunt();
-            else this._renderSettings();
+            switch (this.activeTab) {
+                case "hunt":   this._renderHunt();   break;
+                case "script": this._renderScript(); break;
+                case "uiux":   this._renderUIUX();   break;
+                case "api":    this._renderAPI();    break;
+                // Migrate users who linked the old "settings" tab anywhere.
+                case "settings": this.activeTab = "script"; this._syncTabs(); this._renderScript(); break;
+                default:       this._renderHunt();
+            }
         }
 
         setAuthed(b) {
@@ -1916,6 +2192,12 @@ table.bh-table{width:100%;border-collapse:collapse}
                     openTornUrl(ATTACK_URL + id);
                 });
             });
+            content.querySelectorAll(".bh-row-blacklist").forEach((el) => {
+                el.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    this._blacklistWithUndo(el.dataset.id, el.dataset.name);
+                });
+            });
             content.querySelectorAll("th[data-sort]").forEach((el) => {
                 el.addEventListener("click", () => {
                     const col = el.dataset.sort;
@@ -2019,7 +2301,10 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <td class="num">${ffCell}</td>
                     <td class="num bh-col-divider">${escHtml(b.bs || "—")}</td>
                     <td class="bh-col-divider"><span class="bh-badge ${statusClass}"${hospAttr}>${statusText}</span></td>
-                    <td><button class="bh-attack" data-id="${b.target_id}">Attack →</button></td>
+                    <td class="bh-row-actions-cell">
+                        <button class="bh-attack" data-id="${b.target_id}">Attack →</button>
+                        <button class="bh-row-blacklist" data-id="${b.target_id}" data-name="${escHtml(b.target_name)}" title="Blacklist ${escHtml(b.target_name)}">🚫</button>
+                    </td>
                 </tr>
             `;
         }
@@ -2092,8 +2377,9 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-ff"${checked(f.ff !== false)}> Fair fight</label>
                             <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-bs"${checked(f.bs !== false)}> Battle stats</label>
                             <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-status"${checked(f.status !== false)}> Status</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-blacklist"${checked(f.blacklist === true)}> Blacklist button</label>
                         </div>
-                        <span class="bh-hint">The target name and the Attack button are always shown.</span>
+                        <span class="bh-hint">The target name and the Attack button are always shown. Blacklist button is off by default — enable it for one-click blacklisting from a toast.</span>
                     </div>
                     <div class="bh-row-actions" style="margin-top:8px">
                         <button id="bh-notif-preview" class="bh-btn bh-btn-muted">Preview toast</button>
@@ -2102,13 +2388,199 @@ table.bh-table{width:100%;border-collapse:collapse}
             `;
         }
 
-        _renderSettings() {
+        _clampInt(raw, lo, hi, fallback) {
+            const n = parseInt(raw, 10);
+            if (!Number.isFinite(n)) return fallback;
+            return Math.max(lo, Math.min(hi, n));
+        }
+
+        // ── Blacklist section (rendered inside the Script tab) ─────────────
+        _renderBlacklistSection() {
+            const exportJson = JSON.stringify(this.hunter.blacklist, null, 2);
+            return `
+                <div class="bh-section" id="bh-bl-section">
+                    <h3>Blacklist</h3>
+                    <div class="bh-bl-banner">
+                        ⚠ <b>Browser-local only.</b> This list lives in this browser and is not synced anywhere. To use it on another device, copy the export below and paste it on the other device.
+                    </div>
+                    <div class="bh-row-actions" style="margin-bottom:8px">
+                        <input id="bh-bl-id" class="bh-input" type="number" min="1" step="1" placeholder="Torn user ID" style="max-width:180px">
+                        <button id="bh-bl-add" class="bh-btn bh-btn-primary">Add to blacklist</button>
+                        <span id="bh-bl-add-status" class="bh-save-status" style="margin:0 0 0 4px"></span>
+                    </div>
+                    <div id="bh-bl-list">${this._renderBlacklistList()}</div>
+
+                    <h4 style="margin:20px 0 6px;color:#eee;font-size:13px">Export / import</h4>
+                    <p class="bh-hint">Copy this JSON to another device, then paste it into the Import box there to merge.</p>
+                    <div class="bh-field">
+                        <textarea id="bh-bl-export" class="bh-input bh-bl-textarea" rows="5" readonly>${escHtml(exportJson)}</textarea>
+                    </div>
+                    <div class="bh-row-actions">
+                        <button id="bh-bl-copy" class="bh-btn bh-btn-muted">Copy</button>
+                        <span id="bh-bl-copy-status" class="bh-save-status" style="margin:0 0 0 4px"></span>
+                    </div>
+                    <div class="bh-field" style="margin-top:12px">
+                        <label>Import (JSON or comma-separated IDs)</label>
+                        <textarea id="bh-bl-import" class="bh-input bh-bl-textarea" rows="3" placeholder='{"12345":{"name":"...","note":"..."}}  or  12345, 67890'></textarea>
+                    </div>
+                    <div class="bh-row-actions">
+                        <button id="bh-bl-import-btn" class="bh-btn bh-btn-primary">Import &amp; merge</button>
+                        <button id="bh-bl-clear" class="bh-btn bh-btn-danger">Clear blacklist</button>
+                        <span id="bh-bl-import-status" class="bh-save-status" style="margin:0 0 0 4px"></span>
+                    </div>
+                </div>
+            `;
+        }
+
+        _renderBlacklistList() {
+            const entries = Object.entries(this.hunter.blacklist)
+                .sort(([, a], [, b]) => (b.addedAt || 0) - (a.addedAt || 0));
+            if (entries.length === 0) {
+                return `<div class="bh-empty" style="padding:14px 8px;text-align:left;color:#888">Blacklist is empty. Add an ID above, or use the 🚫 button on a Hunt-list row.</div>`;
+            }
+            return entries.map(([id, e]) => {
+                const name = e.name ? escHtml(e.name) : `<span style="color:#888">(unknown — name fills in next time we see this bounty)</span>`;
+                const added = e.addedAt ? new Date(e.addedAt * 1000).toISOString().slice(0, 10) : "";
+                return `
+                    <div class="bh-bl-row" data-id="${id}">
+                        <div class="bh-bl-row-head">
+                            <a class="bh-name-link" href="${PROFILE_URL}${id}" target="_blank" rel="noopener">${name}</a>
+                            <span class="bh-bl-row-id">[${id}]</span>
+                            <span class="bh-bl-row-date">added ${added}</span>
+                            <button class="bh-btn bh-btn-muted bh-bl-row-remove" data-id="${id}" title="Remove from blacklist">Remove</button>
+                        </div>
+                        <textarea class="bh-input bh-bl-row-note" rows="1" placeholder="Private note (this device only)" data-id="${id}">${escHtml(e.note || "")}</textarea>
+                    </div>
+                `;
+            }).join("");
+        }
+
+        _wireBlacklistSection(content) {
+            const $ = (id) => content.querySelector("#" + id);
+            const listHost = $("bh-bl-list");
+            const refresh = () => {
+                listHost.innerHTML = this._renderBlacklistList();
+                $("bh-bl-export").value = JSON.stringify(this.hunter.blacklist, null, 2);
+            };
+
+            const setStatus = (elId, kind, msg) => {
+                const el = $(elId);
+                if (!el) return;
+                el.className = "bh-save-status bh-save-" + kind;
+                el.textContent = msg;
+                if (kind === "ok" || kind === "info") {
+                    setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 3000);
+                }
+            };
+
+            const idInput = $("bh-bl-id");
+            const addById = () => {
+                const raw = idInput.value.trim();
+                if (!/^\d+$/.test(raw) || raw === "0") {
+                    setStatus("bh-bl-add-status", "err", "Enter a numeric Torn user ID.");
+                    return;
+                }
+                if (Number(raw) === this.hunter.myUserId) {
+                    setStatus("bh-bl-add-status", "err", "Can't blacklist yourself.");
+                    return;
+                }
+                if (this.hunter.isBlacklisted(raw)) {
+                    setStatus("bh-bl-add-status", "info", "Already blacklisted.");
+                    return;
+                }
+                if (this.hunter.addToBlacklist(raw, null)) {
+                    idInput.value = "";
+                    refresh();
+                    setStatus("bh-bl-add-status", "ok", "Added.");
+                }
+            };
+            $("bh-bl-add").addEventListener("click", addById);
+            idInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addById(); } });
+
+            // Delegate row buttons + note edits to the list host so we don't
+            // re-bind dozens of listeners on every refresh.
+            listHost.addEventListener("click", (e) => {
+                const rm = e.target.closest(".bh-bl-row-remove");
+                if (!rm) return;
+                const id = rm.dataset.id;
+                this.hunter.removeFromBlacklist(id);
+                refresh();
+            });
+            // Persist notes on blur — avoids saving on every keystroke, which
+            // would churn localStorage and broadcast a storage event to every
+            // other tab per character typed.
+            listHost.addEventListener("focusout", (e) => {
+                if (!e.target.classList.contains("bh-bl-row-note")) return;
+                const id = e.target.dataset.id;
+                this.hunter.setBlacklistNote(id, e.target.value);
+            });
+
+            // Copy / paste.
+            $("bh-bl-copy").addEventListener("click", async () => {
+                const text = $("bh-bl-export").value;
+                try {
+                    await navigator.clipboard.writeText(text);
+                    setStatus("bh-bl-copy-status", "ok", "Copied!");
+                } catch {
+                    // Fallback for older browsers / restricted contexts.
+                    const ta = $("bh-bl-export");
+                    ta.focus(); ta.select();
+                    try { document.execCommand("copy"); setStatus("bh-bl-copy-status", "ok", "Copied!"); }
+                    catch { setStatus("bh-bl-copy-status", "err", "Couldn't copy — select and copy manually."); }
+                }
+            });
+
+            $("bh-bl-import-btn").addEventListener("click", () => {
+                const text = $("bh-bl-import").value;
+                if (!text.trim()) {
+                    setStatus("bh-bl-import-status", "err", "Paste a JSON blob or list of IDs first.");
+                    return;
+                }
+                const added = this.hunter.importBlacklist(text);
+                $("bh-bl-import").value = "";
+                refresh();
+                setStatus("bh-bl-import-status", "ok", added > 0
+                    ? `Imported ${added} new entr${added === 1 ? "y" : "ies"}.`
+                    : "No new entries (already present or unparseable).");
+            });
+
+            $("bh-bl-clear").addEventListener("click", () => {
+                if (!confirm("Clear the entire blacklist? This can't be undone (unless you copied the export above).")) return;
+                this.hunter.clearBlacklist();
+                refresh();
+            });
+        }
+
+        // Tiny utility used by Hunt-row / toast blacklist buttons. Adds the
+        // player, then shows an undo toast for ~5s.
+        _blacklistWithUndo(id, name) {
+            if (this.hunter.isBlacklisted(id)) return;
+            if (!this.hunter.addToBlacklist(id, name)) return;
+            this.toaster.showAction({
+                message: `Blacklisted ${name || `#${id}`}`,
+                actionLabel: "Undo",
+                onAction: () => this.hunter.removeFromBlacklist(id),
+                timeoutMs: 5000,
+            });
+        }
+
+        // After persisting changes that affect the refresh loop, restart it
+        // from a clean state. Shared by Script and UI/UX persistence paths.
+        _restartLoopFromSettings() {
+            this.hunter.stop();
+            if (this.hunter.settings.searchEnabled && this.hunter.settings.refreshSec > 0) {
+                this.hunter.start();
+            } else if (!this.hunter.settings.searchEnabled) {
+                this.hunter.pausedReason = "disabled";
+            } else {
+                this.hunter.pausedReason = null;
+            }
+        }
+
+        // ── Script tab ─────────────────────────────────────────────────────
+        _renderScript() {
             const content = this._panel.querySelector("#bh-content");
             const s = this.hunter.settings;
-            const tornKey = KeyResolver.resolveTornKey() || "";
-            const pdaNote = KeyResolver.isPDAKey()
-                ? `<p class="bh-hint">Your Torn key is provided by Torn PDA. It is not editable here.</p>`
-                : "";
             const energyScopeHint = (s.pauseOnLowEnergy && this.hunter.lastEnergyError === "scope")
                 ? `<span class="bh-err">Your Torn API key can't read <code>/user/bars</code>. Regenerate it in <a class="bh-name-link" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Preferences → API Key</a> with <b>Minimal</b> access or higher.</span>`
                 : "";
@@ -2173,8 +2645,123 @@ table.bh-table{width:100%;border-collapse:collapse}
                     </div>
                 </div>
 
-                ${this._renderNotificationsSection(s)}
+                ${this._renderBlacklistSection()}
 
+                <div class="bh-section">
+                    <h3>Maintenance</h3>
+                    <button id="bh-reset" class="bh-btn bh-btn-muted">Reset filters to defaults</button>
+                </div>
+            `;
+
+            const $ = (id) => content.querySelector("#" + id);
+            const persistScript = () => {
+                const minFF = parseFloat($("bh-set-ffmin").value);
+                const maxFF = parseFloat($("bh-set-ffmax").value);
+                const cleanMin = Number.isFinite(minFF) ? Math.max(1, minFF) : 1.0;
+                const cleanMax = Number.isFinite(maxFF) ? Math.max(cleanMin, maxFF) : cleanMin;
+                this.hunter.updateSettings({
+                    minPrice: Math.max(0, parseInt($("bh-set-price").value, 10) || 0),
+                    hospitalMaxMin: Math.max(0, Math.min(60, parseInt($("bh-set-hosp").value, 10) || 0)),
+                    minFF: cleanMin,
+                    maxFF: cleanMax,
+                    refreshSec: parseInt($("bh-set-refresh").value, 10),
+                    includeUnknownFF: $("bh-set-unkff").checked,
+                    searchEnabled: $("bh-set-enabled").checked,
+                    pauseOnLowEnergy: $("bh-set-pause-energy").checked,
+                    minEnergy: Math.max(0, Math.min(1000, parseInt($("bh-set-min-energy").value, 10) || 0)),
+                });
+                this._restartLoopFromSettings();
+            };
+            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-unkff",
+             "bh-set-enabled", "bh-set-pause-energy", "bh-set-min-energy"]
+                .forEach((id) => $(id).addEventListener("change", persistScript));
+
+            $("bh-reset").addEventListener("click", () => {
+                if (!confirm("Reset filters to defaults?")) return;
+                // Preserve user-choice toggles AND the blacklist — "reset
+                // filters" shouldn't flip the master search switch, silently
+                // re-enable toasts, or wipe the user's blacklist.
+                const cur = this.hunter.settings;
+                this.hunter.updateSettings({
+                    ...DEFAULT_SETTINGS,
+                    toastsEnabled: cur.toastsEnabled,
+                    searchEnabled: cur.searchEnabled,
+                    pauseOnLowEnergy: cur.pauseOnLowEnergy,
+                    minEnergy: cur.minEnergy,
+                    notifications: cur.notifications,
+                });
+                this._renderActive();
+            });
+
+            this._wireBlacklistSection(content);
+        }
+
+        // ── UI/UX tab ──────────────────────────────────────────────────────
+        _renderUIUX() {
+            const content = this._panel.querySelector("#bh-content");
+            const s = this.hunter.settings;
+            content.innerHTML = this._renderNotificationsSection(s);
+
+            const $ = (id) => content.querySelector("#" + id);
+            const persistUIUX = () => {
+                const allowedPositions = new Set(["bottom-right", "bottom-left", "top-right", "top-left"]);
+                const posRaw = $("bh-set-notif-pos").value;
+                const position = allowedPositions.has(posRaw) ? posRaw : "bottom-right";
+                const fieldsObj = {
+                    level:     $("bh-set-notif-f-level").checked,
+                    reward:    $("bh-set-notif-f-reward").checked,
+                    ff:        $("bh-set-notif-f-ff").checked,
+                    bs:        $("bh-set-notif-f-bs").checked,
+                    status:    $("bh-set-notif-f-status").checked,
+                    blacklist: $("bh-set-notif-f-blacklist").checked,
+                };
+                const widthFloor = this._notifWidthFloor(fieldsObj);
+                const widthInput = $("bh-set-notif-width");
+                widthInput.min = String(widthFloor);
+                const widthHint = $("bh-notif-width-hint");
+                if (widthHint) widthHint.textContent = `Min ${widthFloor}, max 640. Lower min available when you hide fields.`;
+                this.hunter.updateSettings({
+                    toastsEnabled: $("bh-set-toasts").checked,
+                    notifications: {
+                        position,
+                        width:      this._clampInt(widthInput.value,                widthFloor, 640, 300),
+                        maxVisible: this._clampInt($("bh-set-notif-max").value,              1,  20,   3),
+                        timeoutSec: this._clampInt($("bh-set-notif-timeout").value,          3, 120,  15),
+                        fields: fieldsObj,
+                    },
+                });
+                this.toaster.applySettings();
+            };
+            ["bh-set-toasts",
+             "bh-set-notif-pos", "bh-set-notif-width", "bh-set-notif-max", "bh-set-notif-timeout",
+             "bh-set-notif-f-level", "bh-set-notif-f-reward", "bh-set-notif-f-ff",
+             "bh-set-notif-f-bs", "bh-set-notif-f-status", "bh-set-notif-f-blacklist"]
+                .forEach((id) => { const el = $(id); if (el) el.addEventListener("change", persistUIUX); });
+
+            $("bh-notif-preview").addEventListener("click", () => {
+                persistUIUX();
+                this.toaster.showMany([{
+                    target_id: -1,
+                    target_name: "Preview Target",
+                    target_level: 50,
+                    reward: 2_500_000,
+                    ff: 2.75,
+                    bs: "12.3k",
+                    statusState: "Okay",
+                    hospUntil: 0,
+                    bountyCount: 1,
+                }]);
+            });
+        }
+
+        // ── API tab ────────────────────────────────────────────────────────
+        _renderAPI() {
+            const content = this._panel.querySelector("#bh-content");
+            const tornKey = KeyResolver.resolveTornKey() || "";
+            const pdaNote = KeyResolver.isPDAKey()
+                ? `<p class="bh-hint">Your Torn key is provided by Torn PDA. It is not editable here.</p>`
+                : "";
+            content.innerHTML = `
                 <div class="bh-section">
                     <h3>Torn API key</h3>
                     ${pdaNote}
@@ -2218,99 +2805,10 @@ table.bh-table{width:100%;border-collapse:collapse}
                 <div class="bh-section">
                     <h3>Environment</h3>
                     <p class="bh-hint">Version ${VERSION} · Platform: ${IS_PDA ? "Torn PDA" : "Desktop"}</p>
-                    <button id="bh-reset" class="bh-btn bh-btn-muted">Reset filters to defaults</button>
                 </div>
             `;
 
             const $ = (id) => content.querySelector("#" + id);
-            const clampInt = (raw, lo, hi, fallback) => {
-                const n = parseInt(raw, 10);
-                if (!Number.isFinite(n)) return fallback;
-                return Math.max(lo, Math.min(hi, n));
-            };
-            const persistFilters = () => {
-                const minFF = parseFloat($("bh-set-ffmin").value);
-                const maxFF = parseFloat($("bh-set-ffmax").value);
-                const cleanMin = Number.isFinite(minFF) ? Math.max(1, minFF) : 1.0;
-                const cleanMax = Number.isFinite(maxFF) ? Math.max(cleanMin, maxFF) : cleanMin;
-                const allowedPositions = new Set(["bottom-right", "bottom-left", "top-right", "top-left"]);
-                const posRaw = $("bh-set-notif-pos").value;
-                const position = allowedPositions.has(posRaw) ? posRaw : "bottom-right";
-                const fieldsObj = {
-                    level:  $("bh-set-notif-f-level").checked,
-                    reward: $("bh-set-notif-f-reward").checked,
-                    ff:     $("bh-set-notif-f-ff").checked,
-                    bs:     $("bh-set-notif-f-bs").checked,
-                    status: $("bh-set-notif-f-status").checked,
-                };
-                // Dynamic width floor: with most fields hidden the card can
-                // shrink down to ~140 px (name + Attack button); each shown
-                // row adds a bit. Sync the input's min/hint so the spinner
-                // stays in step with the user's choices.
-                const widthFloor = this._notifWidthFloor(fieldsObj);
-                const widthInput = $("bh-set-notif-width");
-                widthInput.min = String(widthFloor);
-                const widthHint = $("bh-notif-width-hint");
-                if (widthHint) widthHint.textContent = `Min ${widthFloor}, max 640. Lower min available when you hide fields.`;
-                this.hunter.updateSettings({
-                    minPrice: Math.max(0, parseInt($("bh-set-price").value, 10) || 0),
-                    hospitalMaxMin: Math.max(0, Math.min(60, parseInt($("bh-set-hosp").value, 10) || 0)),
-                    minFF: cleanMin,
-                    maxFF: cleanMax,
-                    refreshSec: parseInt($("bh-set-refresh").value, 10),
-                    toastsEnabled: $("bh-set-toasts").checked,
-                    includeUnknownFF: $("bh-set-unkff").checked,
-                    searchEnabled: $("bh-set-enabled").checked,
-                    pauseOnLowEnergy: $("bh-set-pause-energy").checked,
-                    minEnergy: Math.max(0, Math.min(1000, parseInt($("bh-set-min-energy").value, 10) || 0)),
-                    notifications: {
-                        position,
-                        width:      clampInt(widthInput.value,                widthFloor, 640, 300),
-                        maxVisible: clampInt($("bh-set-notif-max").value,              1,  20,   3),
-                        timeoutSec: clampInt($("bh-set-notif-timeout").value,          3, 120,  15),
-                        fields: fieldsObj,
-                    },
-                });
-                // Reposition / resize the live toast container so the change
-                // is visible immediately even if no new toasts are firing.
-                this.toaster.applySettings();
-                // Stop unconditionally, then let start() self-gate on
-                // searchEnabled + refreshSec. Handles all four transitions
-                // (on→on, on→off, off→on, off→off) with one code path.
-                this.hunter.stop();
-                if (this.hunter.settings.searchEnabled && this.hunter.settings.refreshSec > 0) {
-                    this.hunter.start();
-                } else if (!this.hunter.settings.searchEnabled) {
-                    this.hunter.pausedReason = "disabled";
-                } else {
-                    this.hunter.pausedReason = null;
-                }
-            };
-            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-toasts", "bh-set-unkff",
-             "bh-set-enabled", "bh-set-pause-energy", "bh-set-min-energy",
-             "bh-set-notif-pos", "bh-set-notif-width", "bh-set-notif-max", "bh-set-notif-timeout",
-             "bh-set-notif-f-level", "bh-set-notif-f-reward", "bh-set-notif-f-ff", "bh-set-notif-f-bs", "bh-set-notif-f-status"]
-                .forEach((id) => $(id).addEventListener("change", persistFilters));
-
-            // "Preview toast" — pop a fake bounty with realistic-looking
-            // fields so the user can verify position / width / fields without
-            // waiting for a real match. Persists current settings first so
-            // the preview reflects unsaved tweaks.
-            $("bh-notif-preview").addEventListener("click", () => {
-                persistFilters();
-                this.toaster.showMany([{
-                    target_id: -1,
-                    target_name: "Preview Target",
-                    target_level: 50,
-                    reward: 2_500_000,
-                    ff: 2.75,
-                    bs: "12.3k",
-                    statusState: "Okay",
-                    hospUntil: 0,
-                    bountyCount: 1,
-                }]);
-            });
-
             const setStatus = (elId, kind, msg) => {
                 const el = $(elId);
                 if (!el) return;
@@ -2354,7 +2852,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                 if (!k) {
                     KeyResolver.clearFFKey();
                     setStatus("bh-ffkey-status", "info", "Cleared.");
-                    // Drop stale error so Hunt tab doesn't display a ghost message.
                     if (this.hunter.lastCounts) this.hunter.lastCounts.ffError = null;
                     this.hunter.refresh().catch(() => {});
                     return;
@@ -2366,9 +2863,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                     return;
                 }
                 KeyResolver.saveFFKey(k);
-                // Clear any "no_key" / "Invalid API key" error left over from the
-                // previous refresh, so tab-switching to Hunt before the new
-                // refresh lands doesn't show a ghost FFScouter error.
                 if (this.hunter.lastCounts) this.hunter.lastCounts.ffError = null;
                 setStatus("bh-ffkey-status", "ok", result.message + " Refreshing matches…");
                 await this.hunter.refresh().catch(() => {});
@@ -2380,20 +2874,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                 if (this.hunter.lastCounts) this.hunter.lastCounts.ffError = null;
                 setStatus("bh-ffkey-status", "info", "Cleared.");
                 this.hunter.refresh().catch(() => {});
-            });
-            $("bh-reset").addEventListener("click", () => {
-                if (!confirm("Reset filters to defaults?")) return;
-                // Preserve user-choice toggles — "reset filters" shouldn't
-                // flip the master search switch or silently re-enable toasts.
-                const s = this.hunter.settings;
-                this.hunter.updateSettings({
-                    ...DEFAULT_SETTINGS,
-                    toastsEnabled: s.toastsEnabled,
-                    searchEnabled: s.searchEnabled,
-                    pauseOnLowEnergy: s.pauseOnLowEnergy,
-                    minEnergy: s.minEnergy,
-                });
-                this._renderActive();
             });
 
             // Debug log section — checkbox persists, log area updates live.
@@ -2424,8 +2904,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                 debugLog.length = 0;
                 renderLog();
             });
-            // Live updates: subscribe once per render, and clean up when the
-            // node goes away (next settings re-render replaces the container).
             const onEntry = () => renderLog();
             debugBus.addEventListener("entry", onEntry);
             const detach = new MutationObserver(() => {
@@ -2695,6 +3173,8 @@ table.bh-table{width:100%;border-collapse:collapse}
                         toaster.applySettings();
                     }
                 } catch { /* ignore malformed writes */ }
+            } else if (e.key === LS.blacklist) {
+                hunter.applyExternalBlacklist();
             }
         });
 
