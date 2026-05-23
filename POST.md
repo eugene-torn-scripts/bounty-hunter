@@ -37,6 +37,26 @@ Suggested screenshots to capture:
 <hr />
 <p>&nbsp;</p>
 <p>
+  <span style="font-size: 16px;"><strong>📝 Updates</strong></span>
+</p>
+<p>&nbsp;</p>
+<ul>
+  <li>
+    <strong>2026-05-23</strong> &mdash; New <strong>Blacklist</strong>: exclude specific players from matches with
+    browser-local notes and copy/paste between devices. New <strong>Notification settings</strong>: position (any
+    corner), card width, max visible, auto-dismiss, and per-field toggles. <strong>Settings split</strong> into
+    <em>Script</em> / <em>UI/UX</em> / <em>API</em> tabs so it's easier to find what you want.
+    <br /><em
+      >Thanks to
+      <a href="https://www.torn.com/profiles.php?XID=1949201" target="_blank" rel="noopener">realmister [1949201]</a>
+      for the ideas.</em
+    >
+  </li>
+</ul>
+<p>&nbsp;</p>
+<hr />
+<p>&nbsp;</p>
+<p>
   <span style="font-size: 16px;"><strong>🎯 What it does</strong></span>
 </p>
 <p>&nbsp;</p>
