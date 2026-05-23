@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.9.0
+// @version      1.9.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.9.0";
+    const VERSION = "1.9.1";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -1858,16 +1858,20 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-row-blacklist{margin-left:6px;padding:4px 8px;background:#2a2a2a;color:#ccc;border:1px solid #444;border-radius:4px;cursor:pointer;font-size:13px;line-height:1;vertical-align:middle}
 .bh-row-blacklist:hover{background:#3a2a2a;border-color:#a44;color:#fff}
 
-/* Blacklist section (Script tab) */
-.bh-bl-banner{background:#2a2418;border:1px solid #5a4a28;border-left:4px solid #c08030;border-radius:4px;padding:8px 12px;margin:0 0 12px;color:#eed8b0;font-size:12px;line-height:1.4}
-.bh-bl-textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;resize:vertical;min-height:60px}
-.bh-bl-row{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border:1px solid #2a2a2a;border-radius:4px;margin-bottom:6px;background:#1e1e1e}
-.bh-bl-row:hover{border-color:#3a3a3a}
-.bh-bl-row-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.bh-bl-row-id{color:#888;font-size:11px;font-variant-numeric:tabular-nums}
-.bh-bl-row-date{color:#666;font-size:11px;margin-left:auto}
-.bh-bl-row-remove{padding:3px 8px!important;font-size:11px!important}
-.bh-bl-row-note{font-size:12px;min-height:28px;padding:4px 8px;resize:vertical}
+/* Blacklist section (Script tab) — compact table layout */
+.bh-bl-banner{background:#2a2418;border:1px solid #5a4a28;border-left:3px solid #c08030;border-radius:4px;padding:6px 10px;margin:0 0 8px;color:#eed8b0;font-size:11px;line-height:1.35}
+.bh-bl-table{width:100%;border-collapse:collapse;font-size:12px}
+.bh-bl-table th{text-align:left;padding:4px 6px;color:#888;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #333;background:#1f1f1f}
+.bh-bl-table td{padding:3px 6px;border-bottom:1px solid #262626;vertical-align:middle}
+.bh-bl-table tr:hover td{background:#222}
+.bh-bl-table input.bh-bl-note{width:100%;padding:3px 6px;font-size:12px;background:#1a1a1a;border:1px solid transparent;border-radius:3px}
+.bh-bl-table input.bh-bl-note:hover{border-color:#333}
+.bh-bl-table input.bh-bl-note:focus{border-color:#4fc3f7;outline:none;background:#222}
+.bh-bl-name-cell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+.bh-bl-name-unknown{color:#888!important;font-style:italic}
+.bh-bl-x{background:none;border:none;color:#888;cursor:pointer;font-size:14px;padding:2px 6px;line-height:1;border-radius:3px}
+.bh-bl-x:hover{color:#ef5350;background:#2a1818}
+.bh-bl-empty{text-align:center;color:#666;font-style:italic;padding:14px 8px!important;font-size:12px}
 .bh-toast-clear-btn{pointer-events:auto;align-self:flex-end;background:rgba(30,30,30,0.9);color:#aaa;
   border:1px solid #444;border-radius:14px;padding:3px 10px;font-size:11px;font-weight:600;
   letter-spacing:.5px;text-transform:uppercase;cursor:pointer;font-family:inherit;
@@ -2395,80 +2399,74 @@ table.bh-table{width:100%;border-collapse:collapse}
         }
 
         // ── Blacklist section (rendered inside the Script tab) ─────────────
+        //
+        // Compact layout modeled on Bazaar Deal Hunter's Rules table: each
+        // entry is one table row with an inline ✕ button. Copy / paste both
+        // hit the system clipboard directly (no persistent textareas), so
+        // the whole section stays roughly the height of the visible rows
+        // plus a single action row.
         _renderBlacklistSection() {
-            const exportJson = JSON.stringify(this.hunter.blacklist, null, 2);
             return `
                 <div class="bh-section" id="bh-bl-section">
                     <h3>Blacklist</h3>
                     <div class="bh-bl-banner">
-                        ⚠ <b>Browser-local only.</b> This list lives in this browser and is not synced anywhere. To use it on another device, copy the export below and paste it on the other device.
+                        ⚠ Stored in this browser only — copy/paste to move between devices.
                     </div>
-                    <div class="bh-row-actions" style="margin-bottom:8px">
-                        <input id="bh-bl-id" class="bh-input" type="number" min="1" step="1" placeholder="Torn user ID" style="max-width:180px">
-                        <button id="bh-bl-add" class="bh-btn bh-btn-primary">Add to blacklist</button>
-                        <span id="bh-bl-add-status" class="bh-save-status" style="margin:0 0 0 4px"></span>
-                    </div>
-                    <div id="bh-bl-list">${this._renderBlacklistList()}</div>
-
-                    <h4 style="margin:20px 0 6px;color:#eee;font-size:13px">Export / import</h4>
-                    <p class="bh-hint">Copy this JSON to another device, then paste it into the Import box there to merge.</p>
-                    <div class="bh-field">
-                        <textarea id="bh-bl-export" class="bh-input bh-bl-textarea" rows="5" readonly>${escHtml(exportJson)}</textarea>
-                    </div>
-                    <div class="bh-row-actions">
+                    <table class="bh-bl-table">
+                        <thead>
+                            <tr>
+                                <th style="width:88px">ID</th>
+                                <th style="width:30%">Name</th>
+                                <th>Note</th>
+                                <th style="width:34px"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="bh-bl-tbody">${this._renderBlacklistRows()}</tbody>
+                    </table>
+                    <div class="bh-row-actions" style="margin-top:8px;flex-wrap:wrap">
+                        <input id="bh-bl-id" class="bh-input" type="number" min="1" step="1" placeholder="Torn user ID" style="max-width:140px">
+                        <button id="bh-bl-add" class="bh-btn bh-btn-primary">+ Add</button>
                         <button id="bh-bl-copy" class="bh-btn bh-btn-muted">Copy</button>
-                        <span id="bh-bl-copy-status" class="bh-save-status" style="margin:0 0 0 4px"></span>
-                    </div>
-                    <div class="bh-field" style="margin-top:12px">
-                        <label>Import (JSON or comma-separated IDs)</label>
-                        <textarea id="bh-bl-import" class="bh-input bh-bl-textarea" rows="3" placeholder='{"12345":{"name":"...","note":"..."}}  or  12345, 67890'></textarea>
-                    </div>
-                    <div class="bh-row-actions">
-                        <button id="bh-bl-import-btn" class="bh-btn bh-btn-primary">Import &amp; merge</button>
-                        <button id="bh-bl-clear" class="bh-btn bh-btn-danger">Clear blacklist</button>
-                        <span id="bh-bl-import-status" class="bh-save-status" style="margin:0 0 0 4px"></span>
+                        <button id="bh-bl-paste" class="bh-btn bh-btn-muted">Paste from clipboard</button>
+                        <button id="bh-bl-clear" class="bh-btn bh-btn-danger">Clear all</button>
+                        <span id="bh-bl-status" class="bh-save-status" style="margin-left:4px"></span>
                     </div>
                 </div>
             `;
         }
 
-        _renderBlacklistList() {
+        _renderBlacklistRows() {
             const entries = Object.entries(this.hunter.blacklist)
                 .sort(([, a], [, b]) => (b.addedAt || 0) - (a.addedAt || 0));
             if (entries.length === 0) {
-                return `<div class="bh-empty" style="padding:14px 8px;text-align:left;color:#888">Blacklist is empty. Add an ID above, or use the 🚫 button on a Hunt-list row.</div>`;
+                return `<tr><td colspan="4" class="bh-bl-empty">Blacklist is empty. Add an ID below, or use the 🚫 button on a Hunt-list row.</td></tr>`;
             }
             return entries.map(([id, e]) => {
-                const name = e.name ? escHtml(e.name) : `<span style="color:#888">(unknown — name fills in next time we see this bounty)</span>`;
-                const added = e.addedAt ? new Date(e.addedAt * 1000).toISOString().slice(0, 10) : "";
+                const nameCell = e.name
+                    ? `<a class="bh-name-link" href="${PROFILE_URL}${id}" target="_blank" rel="noopener">${escHtml(e.name)}</a>`
+                    : `<a class="bh-name-link bh-bl-name-unknown" href="${PROFILE_URL}${id}" target="_blank" rel="noopener" title="Name fills in next time this bounty appears">(unknown)</a>`;
                 return `
-                    <div class="bh-bl-row" data-id="${id}">
-                        <div class="bh-bl-row-head">
-                            <a class="bh-name-link" href="${PROFILE_URL}${id}" target="_blank" rel="noopener">${name}</a>
-                            <span class="bh-bl-row-id">[${id}]</span>
-                            <span class="bh-bl-row-date">added ${added}</span>
-                            <button class="bh-btn bh-btn-muted bh-bl-row-remove" data-id="${id}" title="Remove from blacklist">Remove</button>
-                        </div>
-                        <textarea class="bh-input bh-bl-row-note" rows="1" placeholder="Private note (this device only)" data-id="${id}">${escHtml(e.note || "")}</textarea>
-                    </div>
+                    <tr data-id="${id}">
+                        <td><a class="bh-name-link" href="${PROFILE_URL}${id}" target="_blank" rel="noopener">${id}</a></td>
+                        <td class="bh-bl-name-cell">${nameCell}</td>
+                        <td><input class="bh-input bh-bl-note" data-id="${id}" type="text" placeholder="Note (private, this device only)" value="${escHtml(e.note || "")}"></td>
+                        <td><button class="bh-bl-x" data-id="${id}" title="Remove from blacklist">✕</button></td>
+                    </tr>
                 `;
             }).join("");
         }
 
         _wireBlacklistSection(content) {
             const $ = (id) => content.querySelector("#" + id);
-            const listHost = $("bh-bl-list");
-            const refresh = () => {
-                listHost.innerHTML = this._renderBlacklistList();
-                $("bh-bl-export").value = JSON.stringify(this.hunter.blacklist, null, 2);
-            };
+            const tbody = $("bh-bl-tbody");
+            const refresh = () => { tbody.innerHTML = this._renderBlacklistRows(); };
 
-            const setStatus = (elId, kind, msg) => {
-                const el = $(elId);
+            const status = (kind, msg, sticky = false) => {
+                const el = $("bh-bl-status");
                 if (!el) return;
                 el.className = "bh-save-status bh-save-" + kind;
                 el.textContent = msg;
-                if (kind === "ok" || kind === "info") {
+                if (!sticky && (kind === "ok" || kind === "info")) {
                     setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 3000);
                 }
             };
@@ -2477,77 +2475,77 @@ table.bh-table{width:100%;border-collapse:collapse}
             const addById = () => {
                 const raw = idInput.value.trim();
                 if (!/^\d+$/.test(raw) || raw === "0") {
-                    setStatus("bh-bl-add-status", "err", "Enter a numeric Torn user ID.");
+                    status("err", "Enter a numeric Torn user ID.");
                     return;
                 }
                 if (Number(raw) === this.hunter.myUserId) {
-                    setStatus("bh-bl-add-status", "err", "Can't blacklist yourself.");
+                    status("err", "Can't blacklist yourself.");
                     return;
                 }
                 if (this.hunter.isBlacklisted(raw)) {
-                    setStatus("bh-bl-add-status", "info", "Already blacklisted.");
+                    status("info", "Already blacklisted.");
                     return;
                 }
                 if (this.hunter.addToBlacklist(raw, null)) {
                     idInput.value = "";
                     refresh();
-                    setStatus("bh-bl-add-status", "ok", "Added.");
+                    status("ok", "Added.");
                 }
             };
             $("bh-bl-add").addEventListener("click", addById);
             idInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addById(); } });
 
-            // Delegate row buttons + note edits to the list host so we don't
+            // Delegate row buttons + note edits to the tbody so we don't
             // re-bind dozens of listeners on every refresh.
-            listHost.addEventListener("click", (e) => {
-                const rm = e.target.closest(".bh-bl-row-remove");
-                if (!rm) return;
-                const id = rm.dataset.id;
-                this.hunter.removeFromBlacklist(id);
+            tbody.addEventListener("click", (e) => {
+                const x = e.target.closest(".bh-bl-x");
+                if (!x) return;
+                this.hunter.removeFromBlacklist(x.dataset.id);
                 refresh();
             });
             // Persist notes on blur — avoids saving on every keystroke, which
             // would churn localStorage and broadcast a storage event to every
             // other tab per character typed.
-            listHost.addEventListener("focusout", (e) => {
-                if (!e.target.classList.contains("bh-bl-row-note")) return;
-                const id = e.target.dataset.id;
-                this.hunter.setBlacklistNote(id, e.target.value);
+            tbody.addEventListener("focusout", (e) => {
+                if (!e.target.classList.contains("bh-bl-note")) return;
+                this.hunter.setBlacklistNote(e.target.dataset.id, e.target.value);
             });
 
-            // Copy / paste.
             $("bh-bl-copy").addEventListener("click", async () => {
-                const text = $("bh-bl-export").value;
+                const text = JSON.stringify(this.hunter.blacklist, null, 2);
                 try {
                     await navigator.clipboard.writeText(text);
-                    setStatus("bh-bl-copy-status", "ok", "Copied!");
+                    status("ok", `Copied ${Object.keys(this.hunter.blacklist).length} entries.`);
                 } catch {
-                    // Fallback for older browsers / restricted contexts.
-                    const ta = $("bh-bl-export");
-                    ta.focus(); ta.select();
-                    try { document.execCommand("copy"); setStatus("bh-bl-copy-status", "ok", "Copied!"); }
-                    catch { setStatus("bh-bl-copy-status", "err", "Couldn't copy — select and copy manually."); }
+                    status("err", "Clipboard write blocked — check browser permissions.");
                 }
             });
-
-            $("bh-bl-import-btn").addEventListener("click", () => {
-                const text = $("bh-bl-import").value;
-                if (!text.trim()) {
-                    setStatus("bh-bl-import-status", "err", "Paste a JSON blob or list of IDs first.");
+            $("bh-bl-paste").addEventListener("click", async () => {
+                let text;
+                try {
+                    text = await navigator.clipboard.readText();
+                } catch {
+                    status("err", "Clipboard read blocked — paste into the ID field above instead.");
+                    return;
+                }
+                if (!text || !text.trim()) {
+                    status("err", "Clipboard is empty.");
                     return;
                 }
                 const added = this.hunter.importBlacklist(text);
-                $("bh-bl-import").value = "";
                 refresh();
-                setStatus("bh-bl-import-status", "ok", added > 0
+                status("ok", added > 0
                     ? `Imported ${added} new entr${added === 1 ? "y" : "ies"}.`
                     : "No new entries (already present or unparseable).");
             });
 
             $("bh-bl-clear").addEventListener("click", () => {
-                if (!confirm("Clear the entire blacklist? This can't be undone (unless you copied the export above).")) return;
+                const count = Object.keys(this.hunter.blacklist).length;
+                if (count === 0) { status("info", "Blacklist is already empty."); return; }
+                if (!confirm(`Clear all ${count} blacklist entries? This can't be undone.`)) return;
                 this.hunter.clearBlacklist();
                 refresh();
+                status("ok", "Cleared.");
             });
         }
 
