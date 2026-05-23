@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.9.1
+// @version      1.9.2
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.9.1";
+    const VERSION = "1.9.2";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -1051,6 +1051,34 @@
             this._tick();
         }
 
+        // Returns true when "Pause when energy is below N" is enabled AND the
+        // current energy reading is below N. Side-effects: updates myEnergy
+        // and lastEnergyError so the Settings/Hunt UI stays accurate. Quietly
+        // returns false on errors (scope-too-low key, network) so the script
+        // keeps working — the user just won't see the gate apply.
+        async _isPausedByEnergy() {
+            if (!this.settings.pauseOnLowEnergy || this.settings.minEnergy <= 0) {
+                this.myEnergy = null;
+                this.lastEnergyError = null;
+                return false;
+            }
+            try {
+                const bars = await this.api.fetchBars();
+                const energy = bars && bars.energy;
+                if (energy && typeof energy.current === "number") {
+                    this.myEnergy = { current: energy.current, maximum: energy.maximum };
+                    this.lastEnergyError = null;
+                    return energy.current < this.settings.minEnergy;
+                }
+            } catch (e) {
+                // Torn code 16 = scope too low; treat anything else as
+                // a transient error. Either way, don't block hunting.
+                this.lastEnergyError = (e && e.tornCode === 16) ? "scope" : "error";
+                logDebug(`bars fetch failed (${e && e.tornCode ? "code " + e.tornCode : "network"}): ${e && e.message || "error"}`, "err");
+            }
+            return false;
+        }
+
         async _tick() {
             if (!this._running) return;
             if (!this.settings.searchEnabled) {
@@ -1062,13 +1090,30 @@
             }
             let waitSec = this.settings.refreshSec;
             try {
+                // Energy gate — runs BEFORE the free-ride decision so a tab
+                // that just cold-started below the energy threshold doesn't
+                // pick up another tab's cached matches and spam toasts. Also
+                // drops any bounty toasts still on screen from before the
+                // user's energy dropped — the Hunt-tab rows survive so the
+                // data isn't lost, only the pop-ups.
+                if (await this._isPausedByEnergy()) {
+                    this.pausedReason = "low-energy";
+                    if (this.onMatchesApplied) this.onMatchesApplied(new Set());
+                    if (this.onUpdate) this.onUpdate({ loading: false });
+                } else if (this.pausedReason !== "disabled") {
+                    this.pausedReason = null;
+                }
+
                 // Cross-tab free-ride: if another tab refreshed recently under
                 // the same settings, reuse its result instead of burning our
-                // own API budget. Keeps N-tab users at ~1× call cost.
+                // own API budget. Keeps N-tab users at ~1× call cost. Skipped
+                // when paused on low energy so we don't apply fresh toasts.
                 const shared = this._readShared();
                 const fresh = shared
                     && (Date.now() - shared.writtenAt) < (this.settings.refreshSec * 1000 * SHARED_FRESH_RATIO);
-                if (fresh) {
+                if (this.pausedReason === "low-energy") {
+                    // gated above; nothing else to do this tick
+                } else if (fresh) {
                     logDebug(`free-ride: reusing fresh result from another tab (${shared.matches ? shared.matches.length : 0} matches)`, "info");
                     this._adoptSharedIdentity(shared);
                     this.lastCounts = shared.lastCounts || null;
@@ -1119,31 +1164,16 @@
 
             // Energy gate — skip the (expensive) bounties fetch when the
             // player can't attack anyway. Opt-in; needs a Minimal+ key.
-            // Failures here never block bounty hunting — we just drop the
-            // gate for this cycle and surface a hint in the settings panel.
-            if (this.settings.pauseOnLowEnergy && this.settings.minEnergy > 0) {
-                try {
-                    const bars = await this.api.fetchBars();
-                    const energy = bars && bars.energy;
-                    if (energy && typeof energy.current === "number") {
-                        this.myEnergy = { current: energy.current, maximum: energy.maximum };
-                        this.lastEnergyError = null;
-                        if (energy.current < this.settings.minEnergy) {
-                            this.pausedReason = "low-energy";
-                            logDebug(`paused — energy ${energy.current}/${energy.maximum} < ${this.settings.minEnergy}; skipping bounty fetch`, "info");
-                            if (this.onUpdate) this.onUpdate({ loading: false });
-                            return 0;
-                        }
-                    }
-                } catch (e) {
-                    // Torn code 16 = scope too low; treat anything else as
-                    // a transient error. Either way, don't block hunting.
-                    this.lastEnergyError = (e && e.tornCode === 16) ? "scope" : "error";
-                    logDebug(`bars fetch failed (${e && e.tornCode ? "code " + e.tornCode : "network"}): ${e && e.message || "error"}`, "err");
-                }
-            } else {
-                this.myEnergy = null;
-                this.lastEnergyError = null;
+            // When called from _tick() the gate has already run there, but
+            // a manual "Refresh now" lands here directly so we re-check.
+            // Both paths share _isPausedByEnergy() which sets myEnergy /
+            // lastEnergyError so the Settings hint stays accurate.
+            if (await this._isPausedByEnergy()) {
+                this.pausedReason = "low-energy";
+                if (this.onMatchesApplied) this.onMatchesApplied(new Set());
+                logDebug(`paused — energy ${this.myEnergy ? this.myEnergy.current : "?"}/${this.myEnergy ? this.myEnergy.maximum : "?"} < ${this.settings.minEnergy}; skipping bounty fetch`, "info");
+                if (this.onUpdate) this.onUpdate({ loading: false });
+                return 0;
             }
             this.pausedReason = null;
 
