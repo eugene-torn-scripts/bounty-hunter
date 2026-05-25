@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.9.2
+// @version      1.9.3
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.9.2";
+    const VERSION = "1.9.3";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -816,6 +816,13 @@
             this.myCountry = null;      // "Torn" | "<country>" | null — drives country filter
             this.lastMatches = [];      // last render's rows
             this.lastMatchIds = new Set();
+            // The first apply after a Hunter is constructed (or settings
+            // changed) seeds lastMatchIds silently rather than firing a toast
+            // for every current match. Without this, a cold-starting tab that
+            // free-rides on another tab's cached shared data spams toasts for
+            // bounties the user already saw — including ones they've already
+            // claimed, where the cached reward is now stale.
+            this._firstApplyDone = false;
             this.lastCounts = null;     // { total, afterBasic, afterFF, withFF, ffNull, ffError, statusBreakdown }
             this._statusCache = new Map(); // id → { data, fetchedAt }
             this._timer = null;
@@ -834,9 +841,11 @@
         updateSettings(next) {
             this.settings = { ...this.settings, ...next };
             saveSettings(this.settings);
-            // Reset diff memory so tightening/loosening filters doesn't spam toasts
-            // with everything, nor suppress legitimate new matches.
+            // Reset diff memory + re-seed silently on the next apply so a
+            // filter tweak doesn't bombard the user with toasts for matches
+            // that were already on screen under the previous filter.
             this.lastMatchIds = new Set();
+            this._firstApplyDone = false;
             // Invalidate the cross-tab cache — its matches were computed with the
             // previous filters, so neither this tab nor its siblings should reuse it.
             try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
@@ -945,6 +954,7 @@
         applyExternalSettings(next) {
             this.settings = { ...this.settings, ...next };
             this.lastMatchIds = new Set();
+            this._firstApplyDone = false;
             // Stop unconditionally, then let start() self-gate. Mirrors the
             // local persistFilters() path.
             this.stop();
@@ -999,14 +1009,29 @@
         }
 
         // Apply a new match list: diff against previous to fire toasts, update
-        // lastMatches/lastMatchIds. Shared by the real-refresh path and the
-        // cross-tab free-ride path.
+        // lastMatches/lastMatchIds. Shared by the real-refresh path, the
+        // cross-tab free-ride path, and the adoptSharedPayload storage event.
+        //
+        // Two suppression rules:
+        //  1. **First-apply seed.** Right after the Hunter is constructed (or
+        //     after settings change), there is no prior state to diff against.
+        //     Without this guard, a fresh tab that free-rides on stale shared
+        //     data fires a toast for every cached match — including bounties
+        //     the user already claimed (the cached reward is stale). The Hunt
+        //     tab still shows the seeded matches, so the data isn't lost.
+        //  2. **Energy pause.** When the energy gate is engaged we never fire
+        //     a toast, even if a path other than _tick reaches us (e.g. a
+        //     manual refresh or a sibling tab's storage event). Defense in
+        //     depth on top of the gate in _tick.
         _applyMatches(matches) {
             const matchKey = (m) => `${m.target_id}|${m.reward}`;
             const currentIds = new Set(matches.map(matchKey));
-            const newOnes = matches.filter((m) => !this.lastMatchIds.has(matchKey(m)));
-            if (this.settings.toastsEnabled && this.onToast && newOnes.length > 0) {
-                this.onToast(newOnes);
+            const firstApply = !this._firstApplyDone;
+            this._firstApplyDone = true;
+            const suppressed = firstApply || this.pausedReason === "low-energy";
+            if (!suppressed && this.settings.toastsEnabled && this.onToast) {
+                const newOnes = matches.filter((m) => !this.lastMatchIds.has(matchKey(m)));
+                if (newOnes.length > 0) this.onToast(newOnes);
             }
             this.lastMatches = matches;
             this.lastMatchIds = currentIds;
