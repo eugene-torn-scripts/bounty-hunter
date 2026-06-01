@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.10.0
+// @version      1.11.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.10.0";
+    const VERSION = "1.11.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -146,6 +146,17 @@
         // Standard attack costs 25 energy; raise if you want to keep a buffer
         // for chains/merits. 0 is treated the same as pauseOnLowEnergy=false.
         minEnergy: 25,
+        // Pause auto-refresh when WE can't act on a bounty anyway. All opt-in
+        // (off by default) and free: the player's own status comes from the
+        // /user/profile call refresh() already makes, so no extra API cost and
+        // no key-scope bump (status is Public). State→toggle mapping:
+        //   pauseInHospital   → status.state === "Hospital"
+        //   pauseInJail       → status.state === "Jail"
+        //   pauseWhileTraveling → status.state === "Traveling" (in transit;
+        //                         "Abroad"/landed is still attackable, so not gated)
+        pauseInHospital: false,
+        pauseInJail: false,
+        pauseWhileTraveling: false,
         // Toast notification appearance. Persisted as a nested object so
         // users who haven't touched these keep the original defaults forever.
         notifications: {
@@ -842,7 +853,8 @@
             this.partialFromRateLimit = false; // true when lastMatches comes from a cycle aborted mid-scan by rate limit
             this.myEnergy = null;       // { current, maximum } when pauseOnLowEnergy is on + call succeeded
             this.lastEnergyError = null; // "scope" | "error" | null — drives the settings-panel hint
-            this.pausedReason = null;   // "disabled" | "low-energy" | null — drives the Hunt-tab banner
+            this.mySelfState = null;    // last-known own status.state ("Okay"|"Hospital"|"Jail"|"Traveling"|…) from validateKey
+            this.pausedReason = null;   // "disabled" | "low-energy" | "hospital" | "jail" | "traveling" | null — drives the Hunt-tab banner
             this.onUpdate = null;       // ui sets this
             this.onToast = null;        // toaster sets this (new matches → showMany)
             this.onMatchesApplied = null; // toaster sets this (current target ids → pruneTo)
@@ -1086,6 +1098,21 @@
             this._tick();
         }
 
+        // Returns a pause reason ("hospital"|"jail"|"traveling") when the
+        // matching opt-in toggle is on AND our own status is in that state,
+        // else null. `state` defaults to the last-known own state so the _tick
+        // free-ride gate can use it without an extra fetch; refresh() passes
+        // the freshly-read state. Costs nothing — `state` rides on the
+        // /user/profile call refresh() already makes.
+        _selfStatusPauseReason(state) {
+            const s = state !== undefined ? state : this.mySelfState;
+            if (!s) return null;
+            if (this.settings.pauseInHospital && s === "Hospital") return "hospital";
+            if (this.settings.pauseInJail && s === "Jail") return "jail";
+            if (this.settings.pauseWhileTraveling && s === "Traveling") return "traveling";
+            return null;
+        }
+
         // Returns true when "Pause when energy is below N" is enabled AND the
         // current energy reading is below N. Side-effects: updates myEnergy
         // and lastEnergyError so the Settings/Hunt UI stays accurate. Quietly
@@ -1146,9 +1173,15 @@
                 const shared = this._readShared();
                 const fresh = shared
                     && (Date.now() - shared.writtenAt) < (this.settings.refreshSec * 1000 * SHARED_FRESH_RATIO);
+                // If we last knew we were in hospital/jail/traveling (and the
+                // matching toggle is on), don't free-ride on a sibling tab's
+                // matches — fall through to refresh() so our own status
+                // re-confirms this tick. refresh() is the only place mySelfState
+                // updates, so gating it here would freeze the pause forever.
+                const selfPauseTick = this._selfStatusPauseReason();
                 if (this.pausedReason === "low-energy") {
                     // gated above; nothing else to do this tick
-                } else if (fresh) {
+                } else if (fresh && !selfPauseTick) {
                     logDebug(`free-ride: reusing fresh result from another tab (${shared.matches ? shared.matches.length : 0} matches)`, "info");
                     this._adoptSharedIdentity(shared);
                     this.lastCounts = shared.lastCounts || null;
@@ -1194,8 +1227,25 @@
                     this.myUserLevel = (typeof profile.level === "number") ? profile.level : this.myUserLevel;
                     this.myUserAge = (typeof profile.age === "number") ? profile.age : this.myUserAge;
                     this.myCountry = getPlayerCountry(profile.status) || this.myCountry;
+                    // Own status.state drives the hospital/jail/traveling pause
+                    // gates below. Free — already in this profile response.
+                    if (profile.status && profile.status.state) this.mySelfState = profile.status.state;
                 }
             } catch { /* non-fatal — keep previous identity/country */ }
+
+            // Self-status gate — pause when we can't act on a bounty anyway
+            // (in hospital / jail / mid-flight). All opt-in, all free (uses the
+            // status from the profile call above). Mirrors the energy gate:
+            // skip the bounty fetch and don't write shared, so sibling tabs
+            // can't free-ride this cycle either.
+            const selfPause = this._selfStatusPauseReason();
+            if (selfPause) {
+                this.pausedReason = selfPause;
+                if (this.onMatchesApplied) this.onMatchesApplied(new Set());
+                logDebug(`paused — own status is ${this.mySelfState}; skipping bounty fetch`, "info");
+                if (this.onUpdate) this.onUpdate({ loading: false });
+                return 0;
+            }
 
             // Energy gate — skip the (expensive) bounties fetch when the
             // player can't attack anyway. Opt-in; needs a Minimal+ key.
@@ -2233,14 +2283,23 @@ table.bh-table{width:100%;border-collapse:collapse}
                     </div>
                 `
                 : "";
-            // Paused banner — either the master toggle is off, or energy is
-            // below the configured threshold. Stays above the table so the
-            // "why hasn't this refreshed?" question is answered at a glance.
-            const pausedBanner = this.hunter.pausedReason === "low-energy" && this.hunter.myEnergy
+            // Paused banner — master toggle off, energy below threshold, or our
+            // own status (hospital/jail/traveling) means we can't attack. Stays
+            // above the table so the "why hasn't this refreshed?" question is
+            // answered at a glance.
+            const SELF_PAUSE_COPY = {
+                hospital: "You're in hospital",
+                jail: "You're in jail",
+                traveling: "You're travelling",
+            };
+            const pr = this.hunter.pausedReason;
+            const pausedBanner = pr === "low-energy" && this.hunter.myEnergy
                 ? `<div class="bh-paused-banner">⏸ Paused — energy <b>${this.hunter.myEnergy.current}/${this.hunter.myEnergy.maximum}</b> (below ${this.hunter.settings.minEnergy}). Auto-refresh resumes when you recover enough to attack.</div>`
-                : this.hunter.pausedReason === "disabled"
-                    ? `<div class="bh-paused-banner">⏸ Search disabled — turn it back on in Settings to resume auto-refresh.</div>`
-                    : "";
+                : SELF_PAUSE_COPY[pr]
+                    ? `<div class="bh-paused-banner">⏸ Paused — ${SELF_PAUSE_COPY[pr]}. Auto-refresh resumes once you're back and able to attack.</div>`
+                    : pr === "disabled"
+                        ? `<div class="bh-paused-banner">⏸ Search disabled — turn it back on in Settings to resume auto-refresh.</div>`
+                        : "";
             content.innerHTML = `
                 <div id="bh-donor-host"></div>
                 <div id="bh-status-line">
@@ -2691,6 +2750,10 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <p class="bh-hint">Skips the bounties fetch when you can't attack anyway (25 = standard attack cost). Requires a Torn key with <b>Minimal</b> access or higher.</p>
                     ${energyNowLine}
                     ${energyScopeHint}
+                    <label class="bh-check" style="margin-top:8px"><input type="checkbox" id="bh-set-pause-hosp"${s.pauseInHospital ? " checked" : ""}> Pause while I'm in hospital</label>
+                    <label class="bh-check"><input type="checkbox" id="bh-set-pause-jail"${s.pauseInJail ? " checked" : ""}> Pause while I'm in jail</label>
+                    <label class="bh-check"><input type="checkbox" id="bh-set-pause-travel"${s.pauseWhileTraveling ? " checked" : ""}> Pause while I'm travelling</label>
+                    <p class="bh-hint">Stops auto-refresh when your own status means you can't attack a bounty. Free — read from your profile, no extra API calls or key scope needed.</p>
                 </div>
 
                 <div class="bh-section">
@@ -2761,11 +2824,15 @@ table.bh-table{width:100%;border-collapse:collapse}
                     searchEnabled: $("bh-set-enabled").checked,
                     pauseOnLowEnergy: $("bh-set-pause-energy").checked,
                     minEnergy: Math.max(0, Math.min(1000, parseInt($("bh-set-min-energy").value, 10) || 0)),
+                    pauseInHospital: $("bh-set-pause-hosp").checked,
+                    pauseInJail: $("bh-set-pause-jail").checked,
+                    pauseWhileTraveling: $("bh-set-pause-travel").checked,
                 });
                 this._restartLoopFromSettings();
             };
             ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-unkff",
-             "bh-set-enabled", "bh-set-pause-energy", "bh-set-min-energy"]
+             "bh-set-enabled", "bh-set-pause-energy", "bh-set-min-energy",
+             "bh-set-pause-hosp", "bh-set-pause-jail", "bh-set-pause-travel"]
                 .forEach((id) => $(id).addEventListener("change", persistScript));
 
             $("bh-reset").addEventListener("click", () => {
@@ -2780,6 +2847,9 @@ table.bh-table{width:100%;border-collapse:collapse}
                     searchEnabled: cur.searchEnabled,
                     pauseOnLowEnergy: cur.pauseOnLowEnergy,
                     minEnergy: cur.minEnergy,
+                    pauseInHospital: cur.pauseInHospital,
+                    pauseInJail: cur.pauseInJail,
+                    pauseWhileTraveling: cur.pauseWhileTraveling,
                     notifications: cur.notifications,
                 });
                 this._renderActive();
