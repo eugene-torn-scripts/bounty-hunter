@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.9.3
+// @version      1.10.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.9.3";
+    const VERSION = "1.10.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -567,10 +567,20 @@
         }
 
         async fetchUserProfile(id) {
-            // /profile includes status + age + level + faction_id in one call,
-            // which we need to filter out Torn's new-account protection window.
-            const data = await this._get(`/user/${id}/profile`);
-            return data.profile || null;
+            // profile gives status + age + level + faction_id; bounties gives
+            // THIS target's actual current bounty rows. Combining selections is
+            // a single request (rate limit is per-request, not per-selection),
+            // so the bounty re-confirmation rides along for free. Both
+            // selections require only a Public key. We read the per-target
+            // bounty list from the SAME snapshot as the status, which kills the
+            // skew between the (separately-fetched) global board reward and a
+            // staler cached status — the misalignment that surfaces a claimed
+            // bounty's reward on a target who has already moved on.
+            const data = await this._get(`/user/${id}?selections=profile,bounties`);
+            return {
+                profile: data.profile || null,
+                bounties: Array.isArray(data.bounties) ? data.bounties : null,
+            };
         }
 
         async validateKey() {
@@ -1308,10 +1318,34 @@
                     counts.differentCountry++;
                     continue;
                 }
+                // Reconcile the global-board reward against THIS target's own
+                // bounty list, pulled from the same call as `status`. The global
+                // board row that put `b` here can be stale — a bounty claimed
+                // seconds ago still lingers on the board (Torn's `bounties_delay`),
+                // and our status read could be from a different instant. If the
+                // target's own list no longer carries `b.reward`, that bounty is
+                // gone (claimed/expired); surfacing it would notify the wrong
+                // amount. Only reconcile when we actually have the list — a null
+                // (selection missing / older cache entry) falls open to the board
+                // reward so we never silently drop everyone.
+                let row = b;
+                if (Array.isArray(p.bounties)) {
+                    const own = p.bounties.filter((x) => Number(x.target_id) === Number(b.target_id));
+                    const liveReward = own.some((x) => x.reward === b.reward);
+                    if (!liveReward) {
+                        counts.staleReward = (counts.staleReward || 0) + 1;
+                        continue;
+                    }
+                    // Refresh the ×N badge count from the authoritative list too.
+                    const liveQty = own
+                        .filter((x) => x.reward === b.reward)
+                        .reduce((n, x) => n + ((typeof x.quantity === "number" && x.quantity > 0) ? x.quantity : 1), 0);
+                    if (liveQty > 0) row = { ...b, bountyCount: liveQty };
+                }
                 if (state === "Okay") {
-                    matches.push({ ...b, statusState: "Okay", hospUntil: 0 });
+                    matches.push({ ...row, statusState: "Okay", hospUntil: 0 });
                 } else if (state === "Hospital" && remaining <= hospWindowSec) {
-                    matches.push({ ...b, statusState: "Hospital", hospUntil: until });
+                    matches.push({ ...row, statusState: "Hospital", hospUntil: until });
                 }
             }
             matches.sort((a, b) => b.reward - a.reward);
@@ -1339,7 +1373,7 @@
             this.lastCounts = counts;
             this._applyMatches(matches);
             this._writeShared();
-            logDebug(`refresh: done — ${matches.length} matches (of ${counts.total} bounties)`, "ok", performance.now() - refreshStart);
+            logDebug(`refresh: done — ${matches.length} matches (of ${counts.total} bounties)${counts.staleReward ? `, dropped ${counts.staleReward} stale reward row${counts.staleReward === 1 ? "" : "s"} (claimed/expired per target's own bounty list)` : ""}`, "ok", performance.now() - refreshStart);
             if (this.onUpdate) this.onUpdate({ loading: false });
             return delaySec;
         }
@@ -1375,12 +1409,17 @@
                 while (i < stale.length && !rateLimitErr) {
                     const id = stale[i++];
                     try {
-                        const profile = await this.api.fetchUserProfile(id);
+                        const { profile, bounties } = await this.api.fetchUserProfile(id);
                         if (profile) {
                             const data = {
                                 status: profile.status || null,
                                 age: typeof profile.age === "number" ? profile.age : null,
                                 faction_id: profile.faction_id || null,
+                                // Per-target bounty rows from the SAME snapshot as
+                                // status. null = the call didn't return a bounties
+                                // array (treated as "unknown", we don't reconcile);
+                                // [] = the target genuinely has no bounties now.
+                                bounties: bounties,
                             };
                             out.set(id, data);
                             this._statusCache.set(id, { data, fetchedAt: Date.now() });
