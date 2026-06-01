@@ -42,6 +42,16 @@ Suggested screenshots to capture:
 <p>&nbsp;</p>
 <ul>
   <li>
+    <strong>2026-06-01</strong> &mdash; New <strong>auto-pause when you can't attack</strong>: optional toggles to
+    freeze the refresh loop while <em>you</em> are in <strong>hospital</strong>, <strong>jail</strong>, or
+    <strong>travelling</strong>. All off by default, and free &mdash; read from your own profile, no extra API calls.
+    <br /><em
+      >Thanks to
+      <a href="https://www.torn.com/profiles.php?XID=3972720" target="_blank" rel="noopener">Experiment420 [3972720]</a>
+      for the idea.</em
+    >
+  </li>
+  <li>
     <strong>2026-05-23</strong> &mdash; New <strong>Blacklist</strong>: exclude specific players from matches with
     browser-local notes and copy/paste between devices. New <strong>Notification settings</strong>: position (any
     corner), card width, max visible, auto-dismiss, and per-field toggles. <strong>Settings split</strong> into
@@ -144,6 +154,11 @@ Suggested screenshots to capture:
   <li>
     <strong>Pause when energy is below N</strong> &mdash; skips fetches when you can't attack anyway. Needs a Torn key
     with <em>Minimal</em> access or higher (Public-only keys see a hint in Settings prompting a regenerate)
+  </li>
+  <li>
+    <strong>Pause while you're in hospital / jail / travelling</strong> &mdash; three independent toggles that freeze
+    the refresh loop when your own status means you can't take a bounty. All off by default, and free &mdash; read from
+    your profile, no extra API calls or key scope needed
   </li>
 </ul>
 <p>&nbsp;</p>
