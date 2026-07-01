@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.15.1
+// @version      1.15.2
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.15.1";
+    const VERSION = "1.15.2";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -1156,10 +1156,12 @@
         async _watchTick() {
             if (!this._watchRunning) return;
             const interval = this._watchIntervalMs();
-            // Only the visible tab polls. A hidden tab keeps a cheap heartbeat
-            // timer alive (throttled by the engine anyway) so it can resume
-            // instantly on focus, but sends no requests.
-            if (document.visibilityState !== "visible" || !this.api.key || this.watchlistCount() === 0) {
+            // Only the visible tab polls, and only while bounty search is on —
+            // the master switch is one kill-switch for all API usage. A hidden
+            // or search-off tab keeps a cheap heartbeat timer alive (no requests)
+            // so it resumes instantly on focus / re-enable. Entries are kept.
+            if (document.visibilityState !== "visible" || !this.settings.searchEnabled
+                || !this.api.key || this.watchlistCount() === 0) {
                 if (this.watchlistCount() === 0) { this.stopWatch(); return; }
                 this._scheduleWatch(interval);
                 return;
@@ -2467,7 +2469,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                         cEl.className = n >= RATE_WARN ? "bh-api-counter warn" : "bh-api-counter";
                     }
                     const wEl = document.getElementById("bh-wl-countdown");
-                    if (wEl) wEl.textContent = this.hunter.secondsUntilWatchPoll();
+                    if (wEl && this.hunter.settings.searchEnabled) wEl.textContent = this.hunter.secondsUntilWatchPoll();
                 }
                 document.querySelectorAll("[data-hosp-until]").forEach((el) => {
                     const until = parseInt(el.dataset.hospUntil, 10);
@@ -2858,7 +2860,9 @@ table.bh-table{width:100%;border-collapse:collapse}
                 <div class="bh-watchlist">
                     <div class="bh-wl-head">
                         <span>👁 Watching ${ids.length} for med-out</span>
-                        <span class="bh-wl-hint">Next poll in <span id="bh-wl-countdown">${this.hunter.secondsUntilWatchPoll()}</span>s</span>
+                        ${this.hunter.settings.searchEnabled
+                            ? `<span class="bh-wl-hint">Next poll in <span id="bh-wl-countdown">${this.hunter.secondsUntilWatchPoll()}</span>s</span>`
+                            : `<span class="bh-wl-hint" id="bh-wl-countdown">⏸ paused — bounty search off</span>`}
                         <span class="${projCls}" title="Estimated requests/min this watchlist adds at the current interval (${intervalSec}s), accounting for the 750ms call gate.">~${proj}/min</span>
                         <span class="bh-wl-hint">every ${intervalSec}s · visible tab only</span>
                     </div>
