@@ -42,6 +42,18 @@ Suggested screenshots to capture:
 <p>&nbsp;</p>
 <ul>
   <li>
+    <strong>2026-07-01</strong> &mdash; New <strong>med-out watchlist</strong>: click 👁 on any target to watch it,
+    and get a clickable alert the <em>instant</em> they leave hospital &mdash; even if the board wouldn't re-notify
+    you. Add a <strong>live presence dot</strong> (🟢 online / 🟠 idle / ⚪ offline) to every row, and a
+    <strong>live API-call counter</strong> so you can see how close you are to the rate limit. Both are free &mdash;
+    read from data the script already fetches, no extra calls. Also fixed a bug where <strong>toasts didn't fire on
+    the first refresh</strong> after loading a page.
+    <br /><em
+      >Watchlist inspired by
+      <a href="https://www.torn.com/profiles.php?XID=2396833" target="_blank" rel="noopener">B_Wheezy [2396833]</a>.</em
+    >
+  </li>
+  <li>
     <strong>2026-06-01</strong> &mdash; New <strong>auto-pause when you can't attack</strong>: optional toggles to
     freeze the refresh loop while <em>you</em> are in <strong>hospital</strong>, <strong>jail</strong>, or
     <strong>travelling</strong>. All off by default, and free &mdash; read from your own profile, no extra API calls.
@@ -87,6 +99,14 @@ Suggested screenshots to capture:
   <li>
     Clickable <strong>toast notifications</strong> in the corner of any Torn page when a new match appears &mdash; click
     the toast, go straight to the fight
+  </li>
+  <li>
+    <strong>Med-out watchlist</strong> &mdash; watch a hospitalised target and get an alert the moment they get out,
+    so you don't miss the window
+  </li>
+  <li>
+    <strong>Presence dot</strong> on every row (🟢 online / 🟠 idle / ⚪ offline) and a <strong>live API-call
+    counter</strong> so you can watch your rate-limit headroom
   </li>
   <li>
     Sortable columns, duplicate-bounty grouping (<strong>×N</strong> badge), desktop <em>and</em> Torn PDA support
@@ -138,6 +158,29 @@ Suggested screenshots to capture:
 </p>
 <p>&nbsp;</p>
 <p>
+  <span style="font-size: 16px;"><strong>👁 Med-out watchlist</strong></span>
+</p>
+<p>&nbsp;</p>
+<p>
+  See a juicy bounty but the target is sitting in hospital? Click the <strong>👁</strong> button on their row to add
+  them to the <strong>watchlist</strong>. The script then polls that target on a fast interval (you set it, down to
+  1&nbsp;second) and pops a clickable <strong>&ldquo;out of hospital &mdash; attack now&rdquo;</strong> alert the
+  instant they med out &mdash; the moment the normal board wouldn't re-notify you about. A target drops off the
+  watchlist automatically once its bounty is gone (claimed / expired) or is replaced by a smaller one.
+</p>
+<p>&nbsp;</p>
+<p>
+  Only the <strong>tab you're looking at</strong> does the polling (so background tabs don't burn your API budget), and
+  the strip shows a live <strong>Next poll in Xs</strong> countdown plus an estimate of how many calls/min the
+  watchlist adds. Watch a few targets, not fifty &mdash; each one is one request per poll, and Torn caps you at ~100
+  calls/minute. The Hunt tab's live <strong>API counter</strong> turns red as you approach the limit.
+  <br /><em
+    >Inspired by
+    <a href="https://www.torn.com/profiles.php?XID=2396833" target="_blank" rel="noopener">B_Wheezy [2396833]</a>.</em
+  >
+</p>
+<p>&nbsp;</p>
+<p>
   <span style="font-size: 16px;"><strong>⚙️ Settings</strong></span>
 </p>
 <p>&nbsp;</p>
@@ -146,6 +189,10 @@ Suggested screenshots to capture:
   <li>Fair-fight min / max (default 1.0&ndash;3.0)</li>
   <li>Hospital window &mdash; show Hospital targets with &le; N minutes left (default 5; 0 = Okay only)</li>
   <li>Auto-refresh interval (30s / 60s / 2m / 5m / off)</li>
+  <li>
+    <strong>Watchlist poll interval</strong> &mdash; how often watched targets are checked for a med-out (min 1s; the
+    Settings screen estimates the calls/min it will use)
+  </li>
   <li>Toast notifications on/off</li>
   <li>Include targets with <strong>unknown FF</strong> score &mdash; handy if you don't have an FFScouter key</li>
   <li>
