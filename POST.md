@@ -2,7 +2,7 @@
 
 Paste the HTML below into a Torn forum post (Tools & Userscripts subforum).
 
-**Before posting, replace every `TODO-SCREENSHOT-*` URL** with a real
+**Before posting, replace every screenshot URL** with a real
 `editor.torn.com/...` URL by:
 
 1. Upload the screenshot to Torn's forum-post editor (Add image → Upload).
@@ -28,187 +28,91 @@ Suggested screenshots to capture:
 </p>
 <p>&nbsp;</p>
 <p>
-  The bounty board is a dumpster fire. A thousand targets, most of them too strong to touch, plenty of fresh accounts
-  you <em>can't even attack</em>, and the good ones get claimed in seconds. I built a script that filters the whole
-  board in real time so you only see bounties that are <em>actually yours to take</em> &mdash; and pops a clickable
-  alert the instant a new one appears.
+  The bounty board is a mess &mdash; a thousand targets, most too strong, plenty you <em>can't even attack</em>, and the
+  good ones vanish in seconds. This script filters the whole board in real time so you only see bounties
+  <em>actually worth taking</em>, and pops a clickable alert the instant a new one appears.
 </p>
 <p>&nbsp;</p>
 <hr />
 <p>&nbsp;</p>
-<p>
-  <span style="font-size: 16px;"><strong>📝 Updates</strong></span>
-</p>
-<p>&nbsp;</p>
+<p><span style="font-size: 16px;"><strong>📝 Latest updates</strong></span></p>
 <ul>
   <li>
-    <strong>2026-07-01</strong> &mdash; New <strong>med-out watchlist</strong>: click 👁 on any target to watch it,
-    and get a clickable alert the <em>instant</em> they leave hospital &mdash; even if the board wouldn't re-notify
-    you. Add a <strong>live presence dot</strong> (🟢 online / 🟠 idle / ⚪ offline) to every row, and a
-    <strong>live API-call counter</strong> so you can see how close you are to the rate limit. Both are free &mdash;
-    read from data the script already fetches, no extra calls. Also fixed a bug where <strong>toasts didn't fire on
-    the first refresh</strong> after loading a page.
-    <br /><em
-      >Watchlist inspired by
-      <a href="https://www.torn.com/profiles.php?XID=2396833" target="_blank" rel="noopener">B_Wheezy [2396833]</a>.</em
-    >
+    <strong>2026-07-01</strong> &mdash; <strong>Med-out watchlist</strong> (alert when a hospitalised target gets out),
+    <strong>presence dots</strong> (🟢/🟠/⚪), and a live <strong>API-call counter</strong>. Fixed toasts not firing on
+    the first refresh. <em>Watchlist inspired by
+    <a href="https://www.torn.com/profiles.php?XID=2396833" target="_blank" rel="noopener">B_Wheezy [2396833]</a>.</em>
   </li>
   <li>
-    <strong>2026-06-01</strong> &mdash; New <strong>auto-pause when you can't attack</strong>: optional toggles to
-    freeze the refresh loop while <em>you</em> are in <strong>hospital</strong>, <strong>jail</strong>, or
-    <strong>travelling</strong>. All off by default, and free &mdash; read from your own profile, no extra API calls.
-    <br /><em
-      >Thanks to
-      <a href="https://www.torn.com/profiles.php?XID=3972720" target="_blank" rel="noopener">Experiment420 [3972720]</a>
-      for the idea.</em
-    >
+    <strong>2026-06-01</strong> &mdash; <strong>Auto-pause</strong> the refresh loop while <em>you're</em> in hospital /
+    jail / travelling. <em>Idea from
+    <a href="https://www.torn.com/profiles.php?XID=3972720" target="_blank" rel="noopener">Experiment420 [3972720]</a>.</em>
   </li>
   <li>
-    <strong>2026-05-23</strong> &mdash; New <strong>Blacklist</strong>: exclude specific players from matches with
-    browser-local notes and copy/paste between devices. New <strong>Notification settings</strong>: position (any
-    corner), card width, max visible, auto-dismiss, and per-field toggles. <strong>Settings split</strong> into
-    <em>Script</em> / <em>UI/UX</em> / <em>API</em> tabs so it's easier to find what you want.
-    <br /><em
-      >Thanks to
-      <a href="https://www.torn.com/profiles.php?XID=1949201" target="_blank" rel="noopener">realmister [1949201]</a>
-      for the ideas.</em
-    >
+    <strong>2026-05-23</strong> &mdash; <strong>Blacklist</strong>, full <strong>notification settings</strong>, and
+    Script / UI/UX / API <strong>settings tabs</strong>. <em>Ideas from
+    <a href="https://www.torn.com/profiles.php?XID=1949201" target="_blank" rel="noopener">realmister [1949201]</a>.</em>
   </li>
 </ul>
 <p>&nbsp;</p>
 <hr />
 <p>&nbsp;</p>
-<p>
-  <span style="font-size: 16px;"><strong>🎯 What it does</strong></span>
-</p>
-<p>&nbsp;</p>
+<p><span style="font-size: 16px;"><strong>🎯 What it does</strong></span></p>
 <ul>
   <li>Pulls the <strong>entire</strong> bounty board, not just the first page</li>
-  <li>Filters by <strong>minimum reward</strong> &mdash; skip the pocket change</li>
-  <li>Filters by <strong>fair-fight score</strong> (via FFScouter) &mdash; only targets in your league</li>
-  <li>
-    Auto-skips players under <strong>Torn's New Player Protection</strong> (age &lt; 14d) &mdash; no wasted clicks on
-    unattackable newbies
-  </li>
-  <li>
-    Skips targets in a <strong>different country</strong> than you (abroad / foreign hospital) &mdash; they aren't
-    reachable from your attack page anyway
-  </li>
-  <li>Keeps <strong>Hospital</strong> targets about to release, with a <strong>live countdown</strong> on the badge</li>
-  <li>One-click <strong>Attack</strong> button on every row</li>
-  <li>
-    Clickable <strong>toast notifications</strong> in the corner of any Torn page when a new match appears &mdash; click
-    the toast, go straight to the fight
-  </li>
-  <li>
-    <strong>Med-out watchlist</strong> &mdash; watch a hospitalised target and get an alert the moment they get out,
-    so you don't miss the window
-  </li>
-  <li>
-    <strong>Presence dot</strong> on every row (🟢 online / 🟠 idle / ⚪ offline) and a <strong>live API-call
-    counter</strong> so you can watch your rate-limit headroom
-  </li>
-  <li>
-    Sortable columns, duplicate-bounty grouping (<strong>×N</strong> badge), desktop <em>and</em> Torn PDA support
-  </li>
+  <li>Filters by <strong>minimum reward</strong> and <strong>fair-fight score</strong> (via FFScouter)</li>
+  <li>Skips players under <strong>New Player Protection</strong> and targets in a <strong>different country</strong></li>
+  <li>Keeps near-release <strong>Hospital</strong> targets with a live countdown; one-click <strong>Attack</strong> per row</li>
+  <li>Clickable <strong>toast</strong> the instant a new match appears &mdash; click it, go straight to the fight</li>
+  <li><strong>Med-out watchlist</strong>: get alerted the moment a watched hospital target gets out</li>
+  <li><strong>Presence dot</strong> per row (🟢 online / 🟠 idle / ⚪ offline) + live <strong>API-call counter</strong></li>
+  <li>Sortable columns, ×N duplicate grouping, desktop <em>and</em> Torn PDA</li>
 </ul>
-<p>&nbsp;</p>
-<p>
-  <span style="font-size: 16px;"><strong>⚔️ Who is this for?</strong></span>
-</p>
-<p>&nbsp;</p>
-<p>
-  Bounty hunters who'd rather spend their hospital time planning the next hit than refreshing the board hoping for
-  something in range.
-</p>
 <p>&nbsp;</p>
 <blockquote><strong>Claim the ones worth claiming.</strong></blockquote>
 <p>&nbsp;</p>
 <hr />
 <p>&nbsp;</p>
+<p><span style="font-size: 16px;"><strong>📋 Hunt tab</strong></span></p>
 <p>
-  <span style="font-size: 16px;"><strong>📋 Hunt tab</strong></span>
+  Live-filtered list: name, level, reward, FF, BS estimate, status, attack button. Click a header to sort. Hit
+  <strong>Refresh now</strong> or let it auto-poll.
 </p>
-<p>&nbsp;</p>
-<p>
-  Live-filtered bounty list. Target name + level, reward, FF, BS estimate, status, attack button. Click any column
-  header to sort. Hit <strong>Refresh now</strong> or let it auto-poll on your chosen interval.
-</p>
-<p>&nbsp;</p>
 <p>
   <a href="https://editor.torn.com/765b6b17-bb22-4f30-9106-7e28ed4821e0-4192025.png" target="_blank" rel="noopener"
     ><img src="https://editor.torn.com/765b6b17-bb22-4f30-9106-7e28ed4821e0-4192025.png" alt="Hunt tab screenshot" width="600"
   /></a>
 </p>
 <p>&nbsp;</p>
+<p><span style="font-size: 16px;"><strong>🔔 Toasts</strong></span></p>
 <p>
-  <span style="font-size: 16px;"><strong>🔔 Toast notifications</strong></span>
+  New matches pop a card in the page corner &mdash; name, reward, FF, status. Click it to jump to the attack page. Up to
+  3 at once on desktop; extras roll into a <strong>+N more</strong> card. Configurable position, size, and count.
 </p>
-<p>&nbsp;</p>
-<p>
-  Every new match pops a card in the bottom-right of the Torn page. Shows name, level, reward, FF, status. Click
-  anywhere on the card &mdash; straight to the attack page. Hover pauses the auto-dismiss. Up to 3 on screen at once
-  on desktop (1 on mobile); extras collapse into a <strong>+N more</strong> card that opens the full list.
-</p>
-<p>&nbsp;</p>
 <p>
   <a href="https://editor.torn.com/97045054-f30e-430b-9830-06af6ec6aaef-4192025.png" target="_blank" rel="noopener"
     ><img src="https://editor.torn.com/97045054-f30e-430b-9830-06af6ec6aaef-4192025.png" alt="Toast notification screenshot" width="400"
   /></a>
 </p>
 <p>&nbsp;</p>
+<p><span style="font-size: 16px;"><strong>👁 Med-out watchlist</strong></span></p>
 <p>
-  <span style="font-size: 16px;"><strong>👁 Med-out watchlist</strong></span>
+  Target sitting in hospital? Click <strong>👁</strong> on their row. The script polls them on a fast interval (down to
+  1s) and alerts you the instant they med out &mdash; the moment the board wouldn't re-notify you. They drop off once the
+  bounty is gone or shrinks. Only the tab you're looking at polls, so watch a few, not fifty &mdash; the live API counter
+  turns red near Torn's ~100/min limit.
+  <em>Inspired by
+  <a href="https://www.torn.com/profiles.php?XID=2396833" target="_blank" rel="noopener">B_Wheezy [2396833]</a>.</em>
 </p>
 <p>&nbsp;</p>
-<p>
-  See a juicy bounty but the target is sitting in hospital? Click the <strong>👁</strong> button on their row to add
-  them to the <strong>watchlist</strong>. The script then polls that target on a fast interval (you set it, down to
-  1&nbsp;second) and pops a clickable <strong>&ldquo;out of hospital &mdash; attack now&rdquo;</strong> alert the
-  instant they med out &mdash; the moment the normal board wouldn't re-notify you about. A target drops off the
-  watchlist automatically once its bounty is gone (claimed / expired) or is replaced by a smaller one.
-</p>
-<p>&nbsp;</p>
-<p>
-  Only the <strong>tab you're looking at</strong> does the polling (so background tabs don't burn your API budget), and
-  the strip shows a live <strong>Next poll in Xs</strong> countdown plus an estimate of how many calls/min the
-  watchlist adds. Watch a few targets, not fifty &mdash; each one is one request per poll, and Torn caps you at ~100
-  calls/minute. The Hunt tab's live <strong>API counter</strong> turns red as you approach the limit.
-  <br /><em
-    >Inspired by
-    <a href="https://www.torn.com/profiles.php?XID=2396833" target="_blank" rel="noopener">B_Wheezy [2396833]</a>.</em
-  >
-</p>
-<p>&nbsp;</p>
-<p>
-  <span style="font-size: 16px;"><strong>⚙️ Settings</strong></span>
-</p>
-<p>&nbsp;</p>
+<p><span style="font-size: 16px;"><strong>⚙️ Settings</strong></span></p>
 <ul>
-  <li>Minimum reward (default $500k)</li>
-  <li>Fair-fight min / max (default 1.0&ndash;3.0)</li>
-  <li>Hospital window &mdash; show Hospital targets with &le; N minutes left (default 5; 0 = Okay only)</li>
-  <li>Auto-refresh interval (30s / 60s / 2m / 5m / off)</li>
-  <li>
-    <strong>Watchlist poll interval</strong> &mdash; how often watched targets are checked for a med-out (min 1s; the
-    Settings screen estimates the calls/min it will use)
-  </li>
-  <li>Toast notifications on/off</li>
-  <li>Include targets with <strong>unknown FF</strong> score &mdash; handy if you don't have an FFScouter key</li>
-  <li>
-    <strong>Bounty search</strong> master switch &mdash; freeze the refresh loop without uninstalling
-  </li>
-  <li>
-    <strong>Pause when energy is below N</strong> &mdash; skips fetches when you can't attack anyway. Needs a Torn key
-    with <em>Minimal</em> access or higher (Public-only keys see a hint in Settings prompting a regenerate)
-  </li>
-  <li>
-    <strong>Pause while you're in hospital / jail / travelling</strong> &mdash; three independent toggles that freeze
-    the refresh loop when your own status means you can't take a bounty. All off by default, and free &mdash; read from
-    your profile, no extra API calls or key scope needed
-  </li>
+  <li>Min reward, FF min/max, hospital window</li>
+  <li>Auto-refresh interval, and watchlist poll interval (with a calls/min estimate)</li>
+  <li>Include unknown-FF targets; toast on/off + appearance</li>
+  <li>Master search switch; pause on low energy or while you're in hospital / jail / travelling</li>
+  <li>Blacklist players (browser-local, copy/paste between devices)</li>
 </ul>
-<p>&nbsp;</p>
 <p>
   <a href="https://editor.torn.com/cbbd6b47-21a9-45e4-82c7-535bde31ba85-4192025.png" target="_blank" rel="noopener"
     ><img src="https://editor.torn.com/cbbd6b47-21a9-45e4-82c7-535bde31ba85-4192025.png" alt="Settings tab screenshot" width="500"
@@ -217,84 +121,51 @@ Suggested screenshots to capture:
 <p>&nbsp;</p>
 <hr />
 <p>&nbsp;</p>
+<p><span style="font-size: 16px;"><strong>⚠️ Watch your API budget</strong></span></p>
 <p>
-  <span style="font-size: 16px;"><strong>⚠️ Don't blow your API budget</strong></span>
+  Torn allows <strong>100 calls/min per key</strong>. Each refresh costs ~10 for the board, 1 for FFScouter, and
+  <strong>1 per surviving target</strong> &mdash; loose filters + a 30s interval <strong>will</strong> rate-limit you (and
+  every other script sharing your key). Keep min reward at <strong>$500k+</strong>, FF around <strong>1.0&ndash;3.0</strong>,
+  and stick to the default <strong>60s</strong> refresh unless your match count is tiny.
 </p>
-<p>&nbsp;</p>
-<p>Torn allows <strong>100 API calls per minute per key</strong>. Each refresh costs roughly:</p>
-<ul>
-  <li>~10 calls to fetch the full bounty board</li>
-  <li>1 bulk call to FFScouter</li>
-  <li><strong>1 call per FF-surviving target</strong> to check status + age</li>
-</ul>
-<p>
-  That last bit is the one that can bite. Loose filters (very low min reward + wide FF range) can produce
-  <em>hundreds</em> of survivors per refresh. Combine that with a 30-second refresh interval and you
-  <strong>will</strong> get rate-limited &mdash; which temporarily breaks any other scripts that share your key too.
-</p>
-<p>&nbsp;</p>
-<p><strong>Rule of thumb:</strong></p>
-<ul>
-  <li>Keep minimum reward at <strong>$500k+</strong> for normal days, <strong>$200k+</strong> if the board is thin</li>
-  <li>Keep FF range narrow &mdash; <strong>1.0&ndash;3.0</strong> is the sweet spot for respect</li>
-  <li>
-    Default <strong>60-second</strong> refresh is plenty. Only drop to 30s if your post-filter match count is in the
-    single digits.
-  </li>
-</ul>
 <p>&nbsp;</p>
 <hr />
 <p>&nbsp;</p>
-<p>
-  <span style="font-size: 16px;"><strong>⚡ Setup &mdash; 60 seconds</strong></span>
-</p>
-<p>&nbsp;</p>
+<p><span style="font-size: 16px;"><strong>⚡ Setup &mdash; 60 seconds</strong></span></p>
 <ol>
   <li>Install the script (link below)</li>
   <li>Click the 🎯 button in your footer bar</li>
+  <li>Paste your <strong>Public</strong> Torn API key (offers to reuse Supply Pack Analyzer's key if installed)</li>
   <li>
-    Paste your <strong>Public</strong> Torn API key (the script offers to reuse Supply Pack Analyzer's key if you have
-    it installed)
-  </li>
-  <li>
-    Paste your <strong>FFScouter</strong> key in Settings &mdash; grab one free at
+    Paste your <strong>FFScouter</strong> key in Settings &mdash; free at
     <a href="https://ffscouter.com" target="_blank" rel="noopener">ffscouter.com</a>
   </li>
 </ol>
-<p>&nbsp;</p>
+<p>
+  <strong>Note:</strong> the footer button only shows on the <strong>new chat (3.0)</strong>. If you're still on the
+  <strong>old chat (2.0)</strong>, switch to 3.0 or the button won't appear.
+</p>
 <p>
   <a href="https://editor.torn.com/cdbeb15b-7280-4a13-83f9-332633cf2b91-4192025.png" target="_blank" rel="noopener"
     ><img src="https://editor.torn.com/cdbeb15b-7280-4a13-83f9-332633cf2b91-4192025.png" alt="Footer button screenshot" width="435"
   /></a>
 </p>
 <p>&nbsp;</p>
-<p>
-  <span style="font-size: 16px;"><strong>💚 If you like the script</strong></span>
-</p>
-<p>&nbsp;</p>
-<p>
-  Building and maintaining this is a labour of love &mdash; and a Xanax now and then keeps it going. If you've enjoyed
-  Bounty Hunter and want to say thanks, send a Xanax to
-  <a href="https://www.torn.com/profiles.php?XID=4192025" target="_blank" rel="noopener">eugene_s [4192025]</a>
-  with the word <strong>"bounty"</strong> or <strong>"hunt"</strong> in the message. Donors will see a small green
-  thank-you note on their Hunt tab. Dismissable, no nags.
-</p>
-<p>&nbsp;</p>
 <hr />
 <p>&nbsp;</p>
+<p><span style="font-size: 16px;"><strong>💚 Like it?</strong></span></p>
 <p>
-  <span style="font-size: 16px;"><strong>🔒 Privacy</strong></span>
+  Send a Xanax to
+  <a href="https://www.torn.com/profiles.php?XID=4192025" target="_blank" rel="noopener">eugene_s [4192025]</a>
+  with <strong>"bounty"</strong> or <strong>"hunt"</strong> in the message &mdash; donors get a small dismissable
+  thank-you note on the Hunt tab.
 </p>
 <p>&nbsp;</p>
+<p><span style="font-size: 16px;"><strong>🔒 Privacy</strong></span></p>
 <p>
-  Your API keys <strong>never leave your browser</strong>. The script talks directly to <code>api.torn.com</code> and
-  <code>ffscouter.com</code>. On Torn PDA the key is injected by PDA itself and nothing is stored locally.
-</p>
-<p>&nbsp;</p>
-<p>
-  The only call to anything else is the donor-status check above &mdash; it sends just your Torn user id (no key, no
-  PII) to a small Cloudflare Worker so the thank-you banner can light up. Cached for 6 hours, so a single tab hits the
-  worker at most ~4 times a day.
+  Your API keys <strong>never leave your browser</strong> &mdash; the script talks straight to <code>api.torn.com</code>
+  and <code>ffscouter.com</code>. The only other call sends just your Torn id (no key, no PII) to light up the donor
+  thank-you note.
 </p>
 <p>&nbsp;</p>
 <hr />
@@ -313,7 +184,7 @@ Suggested screenshots to capture:
 </p>
 <p>&nbsp;</p>
 <p style="text-align: center;">
-  <em>Works with Tampermonkey, Violentmonkey, or compatible userscript managers. Torn PDA supported.</em> <br /><em
+  <em>Works with Tampermonkey, Violentmonkey, or compatible managers. Torn PDA supported.</em> <br /><em
     >Feedback and suggestions welcome &mdash; reply here or message me in-game.</em
   >
 </p>
