@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.14.0
+// @version      1.14.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.14.0";
+    const VERSION = "1.14.1";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -1164,11 +1164,15 @@
                 try {
                     const { profile, bounties } = await this.api.fetchUserProfile(Number(id));
                     if (!this.watchlist[id]) continue; // removed mid-loop
-                    // Drop when the target's own bounty list no longer carries
-                    // the reward we're watching — bounty claimed or expired.
-                    const stillLive = Array.isArray(bounties)
-                        && bounties.some((x) => Number(x.target_id) === Number(id) && x.reward === entry.reward);
-                    if (!stillLive) { delete this.watchlist[id]; changed = true; continue; }
+                    // Drop when the best bounty now on the target is worth less
+                    // than what we signed up to watch — the original was claimed
+                    // or expired and only a cheaper (or no) bounty remains. A
+                    // same-or-higher replacement is kept (still worth the hit).
+                    const own = Array.isArray(bounties)
+                        ? bounties.filter((x) => Number(x.target_id) === Number(id))
+                        : [];
+                    const maxReward = own.reduce((m, x) => Math.max(m, Number(x.reward) || 0), 0);
+                    if (own.length === 0 || maxReward < entry.reward) { delete this.watchlist[id]; changed = true; continue; }
                     const state = profile && profile.status ? profile.status.state : null;
                     if (state) {
                         const prev = entry.lastState;
