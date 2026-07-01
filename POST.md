@@ -36,6 +36,12 @@ Uploaded screenshots in use:
 </p>
 <ul style="font-size: 14px;">
   <li>
+    <strong>2026-07-01</strong> &mdash; <strong>Settings rework</strong>: the on/off switch now sits right on the
+    <strong>Hunt</strong> tab (▶ Running / ⏸ Paused), and the rest is regrouped into clearer tabs &mdash;
+    <strong>Filters</strong>, <strong>Alerts</strong>, <strong>Blacklist</strong>, and <strong>Key</strong>. Less
+    clutter, easier to find things.
+  </li>
+  <li>
     <strong>2026-07-01</strong> &mdash; <strong>Med-out watchlist</strong> (alert when a hospitalised target gets out),
     <strong>presence dots</strong> (🟢/🟠/⚪), and a live <strong>API-call counter</strong>. Fixed toasts not firing on
     the first refresh.
@@ -132,14 +138,14 @@ Uploaded screenshots in use:
   <span style="font-size: 16px;"><strong>⚙️ Settings</strong></span>
 </p>
 <ul style="font-size: 14px;">
-  <li>Min reward, FF min/max, hospital window</li>
-  <li>Auto-refresh interval, and watchlist poll interval (with a calls/min estimate)</li>
-  <li>Include unknown-FF targets; toast on/off + appearance</li>
-  <li>Master search switch; pause on low energy or while you're in hospital / jail / travelling</li>
-  <li>Blacklist players (browser-local, copy/paste between devices)</li>
+  <li><strong>Hunt</strong> — the ▶ Running / ⏸ Paused switch (pauses the whole script), refresh, and API counter</li>
+  <li><strong>Filters</strong> — min reward, FF range, hospital window, reachability (same-country / unknown-FF)</li>
+  <li><strong>Alerts</strong> — refresh + watchlist intervals, toast appearance, and an Advanced block for the energy / hospital / jail / travel pauses</li>
+  <li><strong>Blacklist</strong> — exclude players (browser-local, copy/paste between devices)</li>
+  <li><strong>Key</strong> — Torn + FFScouter keys, debug log</li>
 </ul>
 <p style="font-size: 14px;">
-  The Settings tab looks a bit messy right now, so I'm not adding a screenshot yet. I'll tidy it up and add one soon.
+  Settings were just reworked into these tabs — proper screenshots coming soon.
 </p>
 <p>&nbsp;</p>
 <hr />
@@ -164,7 +170,7 @@ Uploaded screenshots in use:
   <li>Click the 🎯 button in your footer bar</li>
   <li>Paste your <strong>Public</strong> Torn API key (offers to reuse Supply Pack Analyzer's key if installed)</li>
   <li>
-    Paste your <strong>FFScouter</strong> key in Settings &mdash; free at
+    Paste your <strong>FFScouter</strong> key in the <strong>Key</strong> tab &mdash; free at
     <a href="https://ffscouter.com" target="_blank" rel="noopener">ffscouter.com</a>
   </li>
 </ol>
