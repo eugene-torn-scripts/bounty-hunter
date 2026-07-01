@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.12.0
+// @version      1.13.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.12.0";
+    const VERSION = "1.13.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -179,6 +179,7 @@
                 ff: true,
                 bs: true,
                 status: true,
+                location: true,       // "📍 <country>" marker when the target is in a different country than you
                 blacklist: false,     // small "🚫 Blacklist" button next to Attack
             },
         },
@@ -298,7 +299,7 @@
                 case "Traveling":
                     return { text: "✈ Traveling", cls: "bh-badge-travel", attr: "" };
                 case "Abroad":
-                    return { text: b.abroadWhere ? `✈ ${escHtml(b.abroadWhere)}` : "✈ Abroad", cls: "bh-badge-travel", attr: "" };
+                    return { text: "✈ Abroad", cls: "bh-badge-travel", attr: "" };
                 default:
                     return { text: "Okay", cls: "bh-badge-ok", attr: "" };
             }
@@ -1416,14 +1417,22 @@
                         .reduce((n, x) => n + ((typeof x.quantity === "number" && x.quantity > 0) ? x.quantity : 1), 0);
                     if (liveQty > 0) row = { ...b, bountyCount: liveQty };
                 }
+                // Location marker — set when the target is somewhere you can't
+                // attack from right now. "In transit" for mid-flight targets
+                // (country unknown), otherwise their country name.
+                const away = state === "Traveling"
+                    ? { awayFromMe: true, location: "In transit" }
+                    : (targetCountry && this.myCountry && targetCountry !== this.myCountry)
+                        ? { awayFromMe: true, location: targetCountry }
+                        : { awayFromMe: false, location: null };
                 if (state === "Okay") {
-                    matches.push({ ...row, statusState: "Okay", hospUntil: 0 });
+                    matches.push({ ...row, statusState: "Okay", hospUntil: 0, ...away });
                 } else if (state === "Hospital" && (this.settings.hospNoLimit || remaining <= hospWindowSec)) {
-                    matches.push({ ...row, statusState: "Hospital", hospUntil: until });
+                    matches.push({ ...row, statusState: "Hospital", hospUntil: until, ...away });
                 } else if (!this.settings.sameCountryOnly && (state === "Abroad" || state === "Traveling")) {
                     // Only surfaced in "include all locations" mode — unattackable
                     // until you're co-located, shown for planning/awareness.
-                    matches.push({ ...row, statusState: state, hospUntil: 0, abroadWhere: targetCountry || null });
+                    matches.push({ ...row, statusState: state, hospUntil: 0, ...away });
                 }
             }
             matches.sort((a, b) => b.reward - a.reward);
@@ -1645,6 +1654,7 @@
             const showFF = fields.ff !== false;
             const showBS = fields.bs !== false;
             const showStatus = fields.status !== false;
+            const showLocation = fields.location !== false;
             const showBlacklist = fields.blacklist === true;
             const sm = fmt.statusMeta(b);
             const statusLabel = sm.text;
@@ -1668,8 +1678,11 @@
             const statusChip = showStatus
                 ? `<span class="bh-chip ${statusClass}"${hospAttr}>${statusLabel}</span>`
                 : "";
-            const metaRow = (ffChip || bsChip || statusChip)
-                ? `<div class="bh-toast-meta">${ffChip}${bsChip}${statusChip}</div>`
+            const locationChip = (showLocation && b.awayFromMe && b.location)
+                ? `<span class="bh-chip bh-badge-travel">📍 ${escHtml(b.location)}</span>`
+                : "";
+            const metaRow = (ffChip || bsChip || statusChip || locationChip)
+                ? `<div class="bh-toast-meta">${ffChip}${bsChip}${statusChip}${locationChip}</div>`
                 : "";
             const actionsRow = showBlacklist
                 ? `<div class="bh-toast-actions">
@@ -2475,6 +2488,9 @@ table.bh-table{width:100%;border-collapse:collapse}
             const statusClass = sm.cls;
             const hospAttr = sm.attr;
             const statusText = sm.text;
+            const locationBadge = (b.awayFromMe && b.location)
+                ? ` <span class="bh-badge bh-badge-travel">📍 ${escHtml(b.location)}</span>`
+                : "";
             const ffCell = b.ff == null ? "—" : b.ff.toFixed(2);
             const countBadge = b.bountyCount > 1
                 ? ` <span class="bh-count">×${b.bountyCount}</span>`
@@ -2488,7 +2504,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <td class="num">${escHtml(fmt.moneyFull(b.reward))}</td>
                     <td class="num">${ffCell}</td>
                     <td class="num bh-col-divider">${escHtml(b.bs || "—")}</td>
-                    <td class="bh-col-divider"><span class="bh-badge ${statusClass}"${hospAttr}>${statusText}</span></td>
+                    <td class="bh-col-divider"><span class="bh-badge ${statusClass}"${hospAttr}>${statusText}</span>${locationBadge}</td>
                     <td class="bh-row-actions-cell">
                         <button class="bh-attack" data-id="${b.target_id}">Attack →</button>
                         <button class="bh-row-blacklist" data-id="${b.target_id}" data-name="${escHtml(b.target_name)}" title="Blacklist ${escHtml(b.target_name)}">🚫</button>
@@ -2565,9 +2581,10 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-ff"${checked(f.ff !== false)}> Fair fight</label>
                             <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-bs"${checked(f.bs !== false)}> Battle stats</label>
                             <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-status"${checked(f.status !== false)}> Status</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-location"${checked(f.location !== false)}> Location</label>
                             <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-blacklist"${checked(f.blacklist === true)}> Blacklist button</label>
                         </div>
-                        <span class="bh-hint">The target name and the Attack button are always shown. Blacklist button is off by default — enable it for one-click blacklisting from a toast.</span>
+                        <span class="bh-hint">The target name and the Attack button are always shown. Location shows a 📍 marker only when the target is in a different country than you. Blacklist button is off by default — enable it for one-click blacklisting from a toast.</span>
                     </div>
                     <div class="bh-row-actions" style="margin-top:8px">
                         <button id="bh-notif-preview" class="bh-btn bh-btn-muted">Preview toast</button>
@@ -2917,6 +2934,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     ff:        $("bh-set-notif-f-ff").checked,
                     bs:        $("bh-set-notif-f-bs").checked,
                     status:    $("bh-set-notif-f-status").checked,
+                    location:  $("bh-set-notif-f-location").checked,
                     blacklist: $("bh-set-notif-f-blacklist").checked,
                 };
                 const widthFloor = this._notifWidthFloor(fieldsObj);
@@ -2939,7 +2957,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             ["bh-set-toasts",
              "bh-set-notif-pos", "bh-set-notif-width", "bh-set-notif-max", "bh-set-notif-timeout",
              "bh-set-notif-f-level", "bh-set-notif-f-reward", "bh-set-notif-f-ff",
-             "bh-set-notif-f-bs", "bh-set-notif-f-status", "bh-set-notif-f-blacklist"]
+             "bh-set-notif-f-bs", "bh-set-notif-f-status", "bh-set-notif-f-location", "bh-set-notif-f-blacklist"]
                 .forEach((id) => { const el = $(id); if (el) el.addEventListener("change", persistUIUX); });
 
             $("bh-notif-preview").addEventListener("click", () => {
@@ -2954,6 +2972,8 @@ table.bh-table{width:100%;border-collapse:collapse}
                     statusState: "Okay",
                     hospUntil: 0,
                     bountyCount: 1,
+                    awayFromMe: true,
+                    location: "Mexico",
                 }]);
             });
         }
