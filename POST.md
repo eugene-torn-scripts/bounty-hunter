@@ -16,7 +16,8 @@ Suggested screenshots to capture:
 | `https://editor.torn.com/765b6b17-bb22-4f30-9106-7e28ed4821e0-4192025.png` | Hunt tab with a handful of matches (rows + sort arrows visible) |
 | `https://editor.torn.com/97045054-f30e-430b-9830-06af6ec6aaef-4192025.png` | A corner toast fired on a new match, ideally with the ×N count badge |
 | `https://editor.torn.com/cdbeb15b-7280-4a13-83f9-332633cf2b91-4192025.png` | Torn footer showing the 🎯 bounty-hunter button (or the shared 3-dots menu open) |
-| `https://editor.torn.com/cbbd6b47-21a9-45e4-82c7-535bde31ba85-4192025.png` | Settings tab with filter fields visible |
+
+(Settings-tab screenshot intentionally omitted for now — the tab is being reworked; add one once it's cleaned up.)
 
 ---
 
@@ -114,9 +115,10 @@ Suggested screenshots to capture:
   <li>Blacklist players (browser-local, copy/paste between devices)</li>
 </ul>
 <p>
-  <a href="https://editor.torn.com/cbbd6b47-21a9-45e4-82c7-535bde31ba85-4192025.png" target="_blank" rel="noopener"
-    ><img src="https://editor.torn.com/cbbd6b47-21a9-45e4-82c7-535bde31ba85-4192025.png" alt="Settings tab screenshot" width="500"
-  /></a>
+  <em
+    >Full disclosure: the Settings tab is a bit of a mess right now &mdash; not pretty enough for a screenshot yet. A
+    cleanup (and a proper screenshot) is coming soon.</em
+  >
 </p>
 <p>&nbsp;</p>
 <hr />
