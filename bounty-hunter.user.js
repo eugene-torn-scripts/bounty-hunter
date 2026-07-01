@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.16.2
+// @version      1.17.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.16.2";
+    const VERSION = "1.17.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -955,6 +955,7 @@
             this._watchNextAt = 0;
             this._watchRunning = false;
             this.onWatchToast = null;   // ui/toaster sets this — med-out alert
+            this.onWatchPoll = null;    // ui sets this — (busy:bool) watchlist activity bar
             this.myUserId = null;
             this.myUserLevel = null;
             this.myUserAge = null;      // days since our own signup — drives NPP rule
@@ -1168,6 +1169,8 @@
             }
             let changed = false;
             const ids = Object.keys(this.watchlist);
+            if (this.onWatchPoll) this.onWatchPoll(true);
+            try {
             for (const id of ids) {
                 if (!this._watchRunning) break;
                 const entry = this.watchlist[id];
@@ -1197,6 +1200,9 @@
                     // again next tick. Don't spam the debug log per-target.
                     if (isRateLimitError(e)) { logDebug("watchlist poll hit rate limit — backing off", "warn"); break; }
                 }
+            }
+            } finally {
+                if (this.onWatchPoll) this.onWatchPoll(false);
             }
             if (changed) {
                 saveWatchlist(this.watchlist);
@@ -1504,6 +1510,29 @@
             this._timer = setTimeout(() => this._tick(), waitSec * 1000);
         }
 
+        // Push the next scheduled auto-refresh out to now + waitSec. No-op when
+        // the loop isn't running or auto-refresh is off (nothing to reschedule).
+        _rescheduleTick(waitSec) {
+            if (!this._running || this.settings.refreshSec <= 0) return;
+            if (this._timer) clearTimeout(this._timer);
+            this._nextAt = Date.now() + waitSec * 1000;
+            this._timer = setTimeout(() => this._tick(), waitSec * 1000);
+        }
+
+        // "Refresh now" button. Runs a refresh, then postpones the next auto
+        // refresh by a full interval from now — so a manual hit doesn't cause a
+        // second fetch moments later on the old schedule.
+        async manualRefresh() {
+            try {
+                const delaySec = await this.refresh();
+                this._rescheduleTick(Math.max(this.settings.refreshSec, delaySec || 0));
+                return delaySec;
+            } catch (e) {
+                this._rescheduleTick(this.settings.refreshSec);
+                throw e;
+            }
+        }
+
         async refresh() {
             this.lastError = null;
             const refreshStart = performance.now();
@@ -1722,6 +1751,10 @@
                     this.partialFromRateLimit = true;
                 }
                 logDebug(`refresh aborted — rate limit at profile step; scanned ${counts.scanned}/${byFF.length}, ${matches.length} partial match${matches.length === 1 ? "" : "es"}${replace ? " (shown)" : " (kept prior)"}`, "err", performance.now() - refreshStart);
+                // Clear the board activity bar before bailing — _tick's catch
+                // re-renders but doesn't pass loading:false, so the bar would
+                // otherwise stay stuck spinning.
+                if (this.onUpdate) this.onUpdate({ loading: false });
                 // _tick will set lastError and trigger the (banner-bearing) re-render.
                 throw profileRLErr;
             }
@@ -2195,6 +2228,19 @@
   white-space:nowrap;font-size:14px;transition:all .15s}
 .bh-tab:hover{color:#ccc!important;background:#2a2a2a}
 .bh-tab.active{color:#ef5350!important;border-bottom-color:#ef5350}
+/* Refresh-activity bars. Board (red) = bounty refresh, scheduled or manual.
+   Watch (amber) = watchlist med-out poll. Both persist across content
+   re-renders because #bh-progress lives outside #bh-content. */
+#bh-progress{flex-shrink:0;background:#1c1c1c}
+.bh-prog-lane{position:relative;height:3px;overflow:hidden;opacity:0;transition:opacity .25s}
+#bh-prog-watch{height:2px}
+.bh-prog-lane.active{opacity:1}
+.bh-prog-fill{position:absolute;top:0;bottom:0;width:35%;left:-35%;border-radius:2px}
+#bh-prog-board .bh-prog-fill{background:linear-gradient(90deg,transparent,#ef5350,transparent)}
+#bh-prog-watch .bh-prog-fill{background:linear-gradient(90deg,transparent,#f0ad4e,transparent)}
+.bh-prog-lane.busy .bh-prog-fill{animation:bh-prog-sweep .9s linear infinite}
+.bh-prog-lane.done .bh-prog-fill{left:0;width:100%;background:#4caf50;animation:none}
+@keyframes bh-prog-sweep{0%{left:-35%}100%{left:100%}}
 #bh-content{padding:16px;overflow-y:auto;flex:1;min-height:0}
 #bh-status-line{display:flex;gap:12px;align-items:center;margin-bottom:12px;color:#888;font-size:12px;flex-wrap:wrap}
 #bh-status-line .bh-err{color:#ef5350}
@@ -2418,6 +2464,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             this._authed = false;
             this._sortCol = "reward";
             this._sortDir = "desc";
+            this._laneTimers = {}; // per-lane "done"-flash fade-out timers
         }
 
         inject() {
@@ -2447,6 +2494,10 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <div class="bh-tab" data-tab="blacklist">Blacklist</div>
                     <div class="bh-tab" data-tab="key">Key</div>
                 </div>
+                <div id="bh-progress">
+                    <div class="bh-prog-lane" id="bh-prog-board"><div class="bh-prog-fill"></div></div>
+                    <div class="bh-prog-lane" id="bh-prog-watch"><div class="bh-prog-fill"></div></div>
+                </div>
                 <div id="bh-content"></div>
             `;
             document.body.appendChild(panel);
@@ -2463,8 +2514,14 @@ table.bh-table{width:100%;border-collapse:collapse}
                 this._renderActive();
             });
 
-            // Hook hunter updates → UI refresh.
-            this.hunter.onUpdate = () => { if (this._isOpen()) this._renderActive(); };
+            // Hook hunter updates → UI refresh. A refresh() cycle passes
+            // { loading:true|false } so the board activity bar tracks it
+            // regardless of whether the panel is open.
+            this.hunter.onUpdate = (opts) => {
+                if (opts && typeof opts.loading === "boolean") this._setLaneBusy("bh-prog-board", opts.loading);
+                if (this._isOpen()) this._renderActive();
+            };
+            this.hunter.onWatchPoll = (busy) => this._setLaneBusy("bh-prog-watch", busy);
             this.hunter.onToast = (bounties) => this.toaster.showMany(bounties);
             this.hunter.onMatchesApplied = (ids) => this.toaster.pruneTo(ids);
             // Med-out alerts bypass the "new matches" toast master switch —
@@ -2496,6 +2553,27 @@ table.bh-table{width:100%;border-collapse:collapse}
         }
 
         _isOpen() { return this._panel && this._panel.classList.contains("bh-open"); }
+
+        // Drive one activity bar. busy=true → indeterminate sweep; busy=false →
+        // brief green "done" flash, then fade out. Safe to call while the panel
+        // is closed (lane just isn't visible). Guarded against a stuck bar: a
+        // new busy=true cancels any pending fade-out from the prior cycle.
+        _setLaneBusy(id, busy) {
+            const lane = this._panel && this._panel.querySelector("#" + id);
+            if (!lane) return;
+            if (this._laneTimers[id]) { clearTimeout(this._laneTimers[id]); this._laneTimers[id] = null; }
+            if (busy) {
+                lane.classList.remove("done");
+                lane.classList.add("active", "busy");
+            } else {
+                lane.classList.remove("busy");
+                lane.classList.add("done");
+                this._laneTimers[id] = setTimeout(() => {
+                    lane.classList.remove("active", "done");
+                    this._laneTimers[id] = null;
+                }, 650);
+            }
+        }
 
         toggle(open) {
             const isOpen = open != null ? open : !this._isOpen();
@@ -2732,7 +2810,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             const btn = content.querySelector("#bh-refresh-btn");
             btn.addEventListener("click", async () => {
                 btn.disabled = true;
-                try { await this.hunter.refresh(); } catch { /* shown in status line */ }
+                try { await this.hunter.manualRefresh(); } catch { /* shown in status line */ }
                 btn.disabled = false;
             });
             content.querySelectorAll(".bh-attack").forEach((el) => {
