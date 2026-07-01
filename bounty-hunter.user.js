@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.15.2
+// @version      1.16.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.15.2";
+    const VERSION = "1.16.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -2335,6 +2335,25 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-api-counter{font-size:11px;color:#7a8a7a;background:#1a231a;border:1px solid #2a3a2a;border-radius:10px;padding:1px 8px;font-variant-numeric:tabular-nums;cursor:default}
 .bh-api-counter.warn{color:#ffb0b0;background:#2f1a1a;border-color:#5a2a2a;font-weight:600}
 
+/* Hunt master on/off toggle */
+.bh-search-toggle{border:none;border-radius:4px;padding:4px 12px;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit}
+.bh-search-toggle.on{background:#1e3a2a;color:#4caf50}
+.bh-search-toggle.on:hover{background:#244a33}
+.bh-search-toggle.off{background:#3a2a1e;color:#ffb74d}
+.bh-search-toggle.off:hover{background:#4a3626}
+
+/* Inline "?" help badge (hover/tap for tooltip) */
+.bh-q{display:inline-block;width:14px;height:14px;line-height:14px;text-align:center;border-radius:50%;background:#333;color:#aaa;font-size:10px;font-weight:700;cursor:help;vertical-align:middle}
+.bh-q:hover{background:#4fc3f7;color:#111}
+
+/* Inline field row (e.g. FF min–max) */
+.bh-inline{display:flex;align-items:center;gap:6px}
+
+/* Advanced disclosure */
+.bh-adv > summary{cursor:pointer;color:#ccc;font-size:13px;font-weight:600;padding:4px 0;list-style:revert}
+.bh-adv > summary:hover{color:#fff}
+.bh-adv[open] > summary{margin-bottom:4px;color:#4fc3f7}
+
 /* Watchlist strip (above the Hunt table) */
 .bh-watchlist{background:#14232a;border:1px solid #24424f;border-left:3px solid #4fc3f7;border-radius:4px;padding:8px 10px;margin:0 0 10px}
 .bh-wl-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:#cbe6f0;font-weight:600;margin-bottom:6px}
@@ -2427,9 +2446,10 @@ table.bh-table{width:100%;border-collapse:collapse}
                 </div>
                 <div id="bh-tabs">
                     <div class="bh-tab active" data-tab="hunt">Hunt</div>
-                    <div class="bh-tab" data-tab="script">Script</div>
-                    <div class="bh-tab" data-tab="uiux">UI/UX</div>
-                    <div class="bh-tab" data-tab="api">API</div>
+                    <div class="bh-tab" data-tab="filters">Filters</div>
+                    <div class="bh-tab" data-tab="alerts">Alerts</div>
+                    <div class="bh-tab" data-tab="blacklist">Blacklist</div>
+                    <div class="bh-tab" data-tab="key">Key</div>
                 </div>
                 <div id="bh-content"></div>
             `;
@@ -2497,12 +2517,15 @@ table.bh-table{width:100%;border-collapse:collapse}
         _renderActive() {
             if (!this._authed) { this._renderAuth(); return; }
             switch (this.activeTab) {
-                case "hunt":   this._renderHunt();   break;
-                case "script": this._renderScript(); break;
-                case "uiux":   this._renderUIUX();   break;
-                case "api":    this._renderAPI();    break;
-                // Migrate users who linked the old "settings" tab anywhere.
-                case "settings": this.activeTab = "script"; this._syncTabs(); this._renderScript(); break;
+                case "hunt":      this._renderHunt();         break;
+                case "filters":   this._renderFilters();      break;
+                case "alerts":    this._renderAlerts();       break;
+                case "blacklist": this._renderBlacklistTab(); break;
+                case "key":       this._renderKey();          break;
+                // Migrate legacy tab ids (script/uiux/api/settings) to the new set.
+                case "script": case "settings": this.activeTab = "filters"; this._syncTabs(); this._renderFilters(); break;
+                case "uiux":   this.activeTab = "alerts"; this._syncTabs(); this._renderAlerts(); break;
+                case "api":    this.activeTab = "key"; this._syncTabs(); this._renderKey(); break;
                 default:       this._renderHunt();
             }
         }
@@ -2532,7 +2555,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <hr style="border:none;border-top:1px solid #333;margin:16px 0">
                     <h3>Optional: FFScouter key</h3>
                     <p>FFScouter provides the fair-fight score. Without it Bounty Hunter can't filter targets by FF — which is the whole point of the script.</p>
-                    <p class="bh-hint">Get one at <a class="bh-name-link" href="https://ffscouter.com" target="_blank" rel="noopener">ffscouter.com</a>. You can set this later under Settings.</p>
+                    <p class="bh-hint">Get one at <a class="bh-name-link" href="https://ffscouter.com" target="_blank" rel="noopener">ffscouter.com</a>. You can set this later in the Key tab.</p>
                     <div class="bh-field">
                         <label>FFScouter key (16 chars)</label>
                         <input id="bh-auth-ffkey" class="bh-input bh-input-masked" type="text" maxlength="16" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" data-lpignore="true" data-1p-ignore="true" data-form-type="other" value="${escHtml(KeyResolver.getFFKey())}">
@@ -2583,6 +2606,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 
         _renderHunt() {
             const content = this._panel.querySelector("#bh-content");
+            const s = this.hunter.settings;
             const rows = this._sortMatches(this.hunter.lastMatches);
             const c = this.hunter.lastCounts;
             const nextIn = this.hunter.secondsUntilRefresh();
@@ -2593,7 +2617,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                 ? `<span class="bh-err">${escHtml(this.hunter.lastError.message || "error")}</span>`
                 : "";
             const ffKeyMissing = !KeyResolver.getFFKey() && !this.hunter.settings.includeUnknownFF
-                ? `<span class="bh-err">No FFScouter key set — every target will be excluded. Add one in Settings, or enable "Include unknown-FF targets".</span>`
+                ? `<span class="bh-err">No FFScouter key set — every target will be excluded. Add one in the Key tab, or enable "Include unknown-FF targets" in Filters.</span>`
                 : "";
             const ffError = c && c.ffError
                 ? `<span class="bh-err">FFScouter: ${escHtml(c.ffError)}</span>`
@@ -2657,11 +2681,12 @@ table.bh-table{width:100%;border-collapse:collapse}
                 : SELF_PAUSE_COPY[pr]
                     ? `<div class="bh-paused-banner">⏸ Paused — ${SELF_PAUSE_COPY[pr]}. Auto-refresh resumes once you're back and able to attack.</div>`
                     : pr === "disabled"
-                        ? `<div class="bh-paused-banner">⏸ Search disabled — turn it back on in Settings to resume auto-refresh.</div>`
+                        ? `<div class="bh-paused-banner">⏸ Search paused — click the <b>⏸ Paused</b> button above to resume.</div>`
                         : "";
             content.innerHTML = `
                 <div id="bh-donor-host"></div>
                 <div id="bh-status-line">
+                    <button id="bh-search-toggle" class="bh-search-toggle ${s.searchEnabled ? "on" : "off"}" title="${s.searchEnabled ? "Bounty search is running — click to pause all polling" : "Bounty search is paused — click to resume"}">${s.searchEnabled ? "▶ Running" : "⏸ Paused"}</button>
                     <button id="bh-refresh-btn" class="bh-btn-muted">Refresh now</button>
                     <span>Next refresh in <span id="bh-countdown">${nextIn}</span>s</span>
                     <span>${rows.length} match${rows.length === 1 ? "" : "es"}${isPartial ? ' <span class="bh-rl-pill">partial</span>' : ""}</span>
@@ -2676,7 +2701,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                 ${rows.length === 0 ? (rateLimited ? "" : `
                     <div class="bh-empty">
                         No bounties match your filters right now.<br>
-                        <span style="color:#666">Adjust min price, FF range, or hospital window under Settings.</span>
+                        <span style="color:#666">Adjust min price, FF range, or hospital window in the Filters tab.</span>
                     </div>
                 `) : `
                     <table class="bh-table">
@@ -2697,6 +2722,17 @@ table.bh-table{width:100%;border-collapse:collapse}
                 `}
             `;
             this._renderDonorBanner(content.querySelector("#bh-donor-host"));
+            const toggle = content.querySelector("#bh-search-toggle");
+            if (toggle) {
+                toggle.addEventListener("click", () => {
+                    // Master on/off for the whole script — the board loop AND the
+                    // watchlist. Persisted + cross-tab synced via updateSettings.
+                    this.hunter.updateSettings({ searchEnabled: !this.hunter.settings.searchEnabled });
+                    this._restartLoopFromSettings();
+                    this.hunter.ensureWatchLoop();
+                    this._renderHunt();
+                });
+            }
             const btn = content.querySelector("#bh-refresh-btn");
             btn.addEventListener("click", async () => {
                 btn.disabled = true;
@@ -2998,7 +3034,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             return Math.max(lo, Math.min(hi, n));
         }
 
-        // ── Blacklist section (rendered inside the Script tab) ─────────────
+        // ── Blacklist section (rendered in the Blacklist tab) ──────────────
         //
         // Compact layout modeled on Bazaar Deal Hunter's Rules table: each
         // entry is one table row with an inline ✕ button. Copy / paste both
@@ -3163,7 +3199,7 @@ table.bh-table{width:100%;border-collapse:collapse}
         }
 
         // After persisting changes that affect the refresh loop, restart it
-        // from a clean state. Shared by Script and UI/UX persistence paths.
+        // from a clean state. Shared by the Filters and Alerts persistence paths.
         _restartLoopFromSettings() {
             this.hunter.stop();
             if (this.hunter.settings.searchEnabled && this.hunter.settings.refreshSec > 0) {
@@ -3175,106 +3211,46 @@ table.bh-table{width:100%;border-collapse:collapse}
             }
         }
 
-        // ── Script tab ─────────────────────────────────────────────────────
-        _renderScript() {
+        // ── Filters tab — which bounties show ──────────────────────────────
+        _renderFilters() {
             const content = this._panel.querySelector("#bh-content");
             const s = this.hunter.settings;
-            const energyScopeHint = (s.pauseOnLowEnergy && this.hunter.lastEnergyError === "scope")
-                ? `<span class="bh-err">Your Torn API key can't read <code>/user/bars</code>. Regenerate it in <a class="bh-name-link" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Preferences → API Key</a> with <b>Minimal</b> access or higher.</span>`
-                : "";
-            const energyNowLine = (s.pauseOnLowEnergy && this.hunter.myEnergy)
-                ? `<span class="bh-hint">Current energy: <b>${this.hunter.myEnergy.current}/${this.hunter.myEnergy.maximum}</b></span>`
-                : "";
             content.innerHTML = `
                 <div class="bh-section">
-                    <h3>Search</h3>
-                    <label class="bh-check"><input type="checkbox" id="bh-set-enabled"${s.searchEnabled ? " checked" : ""}> Bounty search enabled</label>
-                    <p class="bh-hint">Master switch for the refresh loop. When off, no automatic Torn/FFScouter calls are made and no toasts fire.</p>
-                    <label class="bh-check"><input type="checkbox" id="bh-set-pause-energy"${s.pauseOnLowEnergy ? " checked" : ""}> Pause when energy is below</label>
-                    <div class="bh-field" style="max-width:160px;margin-top:4px">
-                        <input id="bh-set-min-energy" class="bh-input" type="number" min="0" max="1000" step="1" value="${s.minEnergy}">
-                    </div>
-                    <p class="bh-hint">Skips the bounties fetch when you can't attack anyway (25 = standard attack cost). Requires a Torn key with <b>Minimal</b> access or higher.</p>
-                    ${energyNowLine}
-                    ${energyScopeHint}
-                    <label class="bh-check" style="margin-top:8px"><input type="checkbox" id="bh-set-pause-hosp"${s.pauseInHospital ? " checked" : ""}> Pause while I'm in hospital</label>
-                    <label class="bh-check"><input type="checkbox" id="bh-set-pause-jail"${s.pauseInJail ? " checked" : ""}> Pause while I'm in jail</label>
-                    <label class="bh-check"><input type="checkbox" id="bh-set-pause-travel"${s.pauseWhileTraveling ? " checked" : ""}> Pause while I'm travelling</label>
-                    <p class="bh-hint">Stops auto-refresh when your own status means you can't attack a bounty. Free — read from your profile, no extra API calls or key scope needed.</p>
-                </div>
-
-                <div class="bh-section">
-                    <h3>Filters</h3>
+                    <h3>Which bounties</h3>
                     <div class="bh-grid-2">
                         <div class="bh-field">
                             <label>Min reward ($)</label>
                             <input id="bh-set-price" class="bh-input" type="number" min="0" step="10000" value="${s.minPrice}">
                         </div>
                         <div class="bh-field">
-                            <label>Hospital max (minutes remaining)</label>
+                            <label>Fair-fight range <span class="bh-q" title="Lower = easier target. 1.0–3.0 is the sweet spot for respect.">?</span></label>
+                            <div class="bh-inline">
+                                <input id="bh-set-ffmin" class="bh-input" type="number" min="1" max="10" step="0.1" value="${s.minFF}" style="max-width:80px">
+                                <span style="color:#888">–</span>
+                                <input id="bh-set-ffmax" class="bh-input" type="number" min="1" max="10" step="0.1" value="${s.maxFF}" style="max-width:80px">
+                            </div>
+                        </div>
+                        <div class="bh-field">
+                            <label>Hospital window (min left) <span class="bh-q" title="0 = Okay targets only. ~5 queues targets about to leave hospital. Max 10080 (1 week).">?</span></label>
                             <input id="bh-set-hosp" class="bh-input" type="number" min="0" max="10080" step="1" value="${s.hospitalMaxMin}"${s.hospNoLimit ? " disabled" : ""}>
-                            <span class="bh-hint">0 = Okay only. ~5 lets you queue targets about to leave hospital. Up to 10080 (1 week).</span>
-                            <label class="bh-check" style="margin-top:4px"><input type="checkbox" id="bh-set-hosp-nolimit"${s.hospNoLimit ? " checked" : ""}> No hospital time limit (include all hospitalised)</label>
+                            <label class="bh-check" style="margin-top:4px"><input type="checkbox" id="bh-set-hosp-nolimit"${s.hospNoLimit ? " checked" : ""}> No limit (all hospitalised)</label>
                         </div>
                         <div class="bh-field">
-                            <label>Fair-fight min</label>
-                            <input id="bh-set-ffmin" class="bh-input" type="number" min="1" max="10" step="0.1" value="${s.minFF}">
-                        </div>
-                        <div class="bh-field">
-                            <label>Fair-fight max</label>
-                            <input id="bh-set-ffmax" class="bh-input" type="number" min="1" max="10" step="0.1" value="${s.maxFF}">
-                        </div>
-                    </div>
-                    <label class="bh-check" style="margin-top:8px"><input type="checkbox" id="bh-set-samecountry"${s.sameCountryOnly ? " checked" : ""}> Only targets in my country</label>
-                    <p class="bh-hint">On (default): hides targets in a different country — only ones you can attack right now. Off: includes different-country and in-transit (travelling/abroad) targets too, marked with a ✈ badge. Those aren't attackable until you're in the same country.</p>
-                </div>
-
-                <div class="bh-section">
-                    <h3>Refresh</h3>
-                    <div class="bh-grid-2">
-                        <div class="bh-field">
-                            <label>Auto-refresh</label>
-                            <select id="bh-set-refresh" class="bh-select">
-                                <option value="30"${s.refreshSec === 30 ? " selected" : ""}>Every 30 s</option>
-                                <option value="60"${s.refreshSec === 60 ? " selected" : ""}>Every 60 s</option>
-                                <option value="120"${s.refreshSec === 120 ? " selected" : ""}>Every 2 min</option>
-                                <option value="300"${s.refreshSec === 300 ? " selected" : ""}>Every 5 min</option>
-                                <option value="0"${s.refreshSec === 0 ? " selected" : ""}>Off (manual only)</option>
-                            </select>
-                            <span class="bh-hint">Honors Torn's global bounty-cache delay. 60 s is comfortably under the rate limit.</span>
-                        </div>
-                        <div class="bh-field">
-                            <label>Matches</label>
-                            <label class="bh-check"><input type="checkbox" id="bh-set-unkff"${s.includeUnknownFF ? " checked" : ""}> Include targets with unknown FF score</label>
+                            <label>Reachability</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-samecountry"${s.sameCountryOnly ? " checked" : ""}> Only targets in my country <span class="bh-q" title="On: hides abroad / in-transit targets you can't attack right now. Off: shows them with a ✈ badge.">?</span></label>
+                            <label class="bh-check" style="margin-top:4px"><input type="checkbox" id="bh-set-unkff"${s.includeUnknownFF ? " checked" : ""}> Include unknown-FF targets <span class="bh-q" title="Shows targets FFScouter has no fair-fight data for. Handy if you have no FFScouter key.">?</span></label>
                         </div>
                     </div>
                 </div>
 
                 <div class="bh-section">
-                    <h3>Watchlist (med-out alerts)</h3>
-                    <div class="bh-grid-2">
-                        <div class="bh-field">
-                            <label>Poll interval (seconds)</label>
-                            <input id="bh-set-watch-int" class="bh-input" type="number" min="1" max="600" step="1" value="${Math.max(1, Number(s.watchlistIntervalSec) || 5)}">
-                            <span class="bh-hint" id="bh-watch-proj-hint"></span>
-                        </div>
-                        <div class="bh-field">
-                            <label>How it works</label>
-                            <p class="bh-hint" style="margin-top:6px">Click 👁 on any Hunt row to watch that target. The <b>visible tab</b> polls each watched target's status and pops an alert the moment they leave hospital. A target is auto-removed only when its bounty is gone (claimed/expired). Minimum 1 s — but each target is one request, and Torn caps ~100/min, so watch few or widen the interval. The Hunt tab shows live calls/min.</p>
-                        </div>
-                    </div>
-                </div>
-
-                ${this._renderBlacklistSection()}
-
-                <div class="bh-section">
-                    <h3>Maintenance</h3>
                     <button id="bh-reset" class="bh-btn bh-btn-muted">Reset filters to defaults</button>
                 </div>
             `;
 
             const $ = (id) => content.querySelector("#" + id);
-            const persistScript = () => {
+            const persistFilters = () => {
                 const minFF = parseFloat($("bh-set-ffmin").value);
                 const maxFF = parseFloat($("bh-set-ffmax").value);
                 const cleanMin = Number.isFinite(minFF) ? Math.max(1, minFF) : 1.0;
@@ -3286,35 +3262,13 @@ table.bh-table{width:100%;border-collapse:collapse}
                     sameCountryOnly: $("bh-set-samecountry").checked,
                     minFF: cleanMin,
                     maxFF: cleanMax,
-                    refreshSec: parseInt($("bh-set-refresh").value, 10),
-                    watchlistIntervalSec: Math.max(1, Math.min(600, parseInt($("bh-set-watch-int").value, 10) || 5)),
                     includeUnknownFF: $("bh-set-unkff").checked,
-                    searchEnabled: $("bh-set-enabled").checked,
-                    pauseOnLowEnergy: $("bh-set-pause-energy").checked,
-                    minEnergy: Math.max(0, Math.min(1000, parseInt($("bh-set-min-energy").value, 10) || 0)),
-                    pauseInHospital: $("bh-set-pause-hosp").checked,
-                    pauseInJail: $("bh-set-pause-jail").checked,
-                    pauseWhileTraveling: $("bh-set-pause-travel").checked,
                 });
                 this._restartLoopFromSettings();
             };
-            ["bh-set-price", "bh-set-hosp", "bh-set-hosp-nolimit", "bh-set-samecountry", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-watch-int", "bh-set-unkff",
-             "bh-set-enabled", "bh-set-pause-energy", "bh-set-min-energy",
-             "bh-set-pause-hosp", "bh-set-pause-jail", "bh-set-pause-travel"]
-                .forEach((id) => $(id).addEventListener("change", persistScript));
-
-            // Live projection hint under the watchlist interval input.
-            const watchIntEl = $("bh-set-watch-int");
-            const projHint = $("bh-watch-proj-hint");
-            const updateProjHint = () => {
-                const iv = Math.max(1, Math.min(600, parseInt(watchIntEl.value, 10) || 5));
-                const k = this.hunter.watchlistCount();
-                if (k === 0) { projHint.textContent = "No targets watched yet. Click 👁 on a Hunt row."; return; }
-                const proj = projectedWatchCallsPerMin(k, iv);
-                projHint.textContent = `${k} watched → ~${proj} calls/min at ${iv}s${proj >= RATE_WARN ? " ⚠ near the ~100/min limit" : ""}.`;
-            };
-            updateProjHint();
-            watchIntEl.addEventListener("input", updateProjHint);
+            ["bh-set-price", "bh-set-hosp", "bh-set-hosp-nolimit", "bh-set-samecountry",
+             "bh-set-ffmin", "bh-set-ffmax", "bh-set-unkff"]
+                .forEach((id) => $(id).addEventListener("change", persistFilters));
 
             // Grey out the numeric cap while "no hospital time limit" is on —
             // its value is ignored in that mode.
@@ -3332,6 +3286,8 @@ table.bh-table{width:100%;border-collapse:collapse}
                     ...DEFAULT_SETTINGS,
                     toastsEnabled: cur.toastsEnabled,
                     searchEnabled: cur.searchEnabled,
+                    refreshSec: cur.refreshSec,
+                    watchlistIntervalSec: cur.watchlistIntervalSec,
                     pauseOnLowEnergy: cur.pauseOnLowEnergy,
                     minEnergy: cur.minEnergy,
                     pauseInHospital: cur.pauseInHospital,
@@ -3341,18 +3297,72 @@ table.bh-table{width:100%;border-collapse:collapse}
                 });
                 this._renderActive();
             });
+        }
 
+        // ── Blacklist tab ──────────────────────────────────────────────────
+        _renderBlacklistTab() {
+            const content = this._panel.querySelector("#bh-content");
+            content.innerHTML = this._renderBlacklistSection();
             this._wireBlacklistSection(content);
         }
 
-        // ── UI/UX tab ──────────────────────────────────────────────────────
-        _renderUIUX() {
+        // ── Alerts tab — timing, toasts, watchlist, and pauses ─────────────
+        _renderAlerts() {
             const content = this._panel.querySelector("#bh-content");
             const s = this.hunter.settings;
-            content.innerHTML = this._renderNotificationsSection(s);
+            const energyScopeHint = (s.pauseOnLowEnergy && this.hunter.lastEnergyError === "scope")
+                ? `<span class="bh-err">Your Torn API key can't read <code>/user/bars</code>. Regenerate it in <a class="bh-name-link" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Preferences → API Key</a> with <b>Minimal</b> access or higher.</span>`
+                : "";
+            const energyNowLine = (s.pauseOnLowEnergy && this.hunter.myEnergy)
+                ? `<span class="bh-hint">Current energy: <b>${this.hunter.myEnergy.current}/${this.hunter.myEnergy.maximum}</b></span>`
+                : "";
+            content.innerHTML = `
+                <div class="bh-section">
+                    <h3>Timing</h3>
+                    <div class="bh-grid-2">
+                        <div class="bh-field">
+                            <label>Board auto-refresh</label>
+                            <select id="bh-set-refresh" class="bh-select">
+                                <option value="30"${s.refreshSec === 30 ? " selected" : ""}>Every 30 s</option>
+                                <option value="60"${s.refreshSec === 60 ? " selected" : ""}>Every 60 s</option>
+                                <option value="120"${s.refreshSec === 120 ? " selected" : ""}>Every 2 min</option>
+                                <option value="300"${s.refreshSec === 300 ? " selected" : ""}>Every 5 min</option>
+                                <option value="0"${s.refreshSec === 0 ? " selected" : ""}>Off (manual only)</option>
+                            </select>
+                            <span class="bh-hint">60 s is comfortably under the rate limit.</span>
+                        </div>
+                        <div class="bh-field">
+                            <label>Watchlist poll (seconds) <span class="bh-q" title="How often watched targets are checked for med-out. Min 1s. Each watched target is one request per poll; the Hunt tab shows live calls/min.">?</span></label>
+                            <input id="bh-set-watch-int" class="bh-input" type="number" min="1" max="600" step="1" value="${Math.max(1, Number(s.watchlistIntervalSec) || 5)}">
+                            <span class="bh-hint" id="bh-watch-proj-hint"></span>
+                        </div>
+                    </div>
+                </div>
+
+                ${this._renderNotificationsSection(s)}
+
+                <div class="bh-section">
+                    <details class="bh-adv">
+                        <summary>Advanced — pause auto-refresh when you can't attack</summary>
+                        <div style="margin-top:10px">
+                            <label class="bh-check"><input type="checkbox" id="bh-set-pause-energy"${s.pauseOnLowEnergy ? " checked" : ""}> Pause when energy is below</label>
+                            <div class="bh-field" style="max-width:160px;margin-top:4px">
+                                <input id="bh-set-min-energy" class="bh-input" type="number" min="0" max="1000" step="1" value="${s.minEnergy}">
+                            </div>
+                            <span class="bh-hint">Skips the fetch when you can't attack (25 = standard attack cost). Needs a Torn key with <b>Minimal</b> access or higher.</span>
+                            ${energyNowLine}
+                            ${energyScopeHint}
+                            <label class="bh-check" style="margin-top:8px"><input type="checkbox" id="bh-set-pause-hosp"${s.pauseInHospital ? " checked" : ""}> Pause while I'm in hospital</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-pause-jail"${s.pauseInJail ? " checked" : ""}> Pause while I'm in jail</label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-pause-travel"${s.pauseWhileTraveling ? " checked" : ""}> Pause while I'm travelling</label>
+                            <span class="bh-hint">Free — read from your profile, no extra API calls or key scope needed.</span>
+                        </div>
+                    </details>
+                </div>
+            `;
 
             const $ = (id) => content.querySelector("#" + id);
-            const persistUIUX = () => {
+            const persistAlerts = () => {
                 const allowedPositions = new Set(["bottom-right", "bottom-left", "top-right", "top-left"]);
                 const posRaw = $("bh-set-notif-pos").value;
                 const position = allowedPositions.has(posRaw) ? posRaw : "bottom-right";
@@ -3372,6 +3382,13 @@ table.bh-table{width:100%;border-collapse:collapse}
                 if (widthHint) widthHint.textContent = `Min ${widthFloor}, max 640. Lower min available when you hide fields.`;
                 this.hunter.updateSettings({
                     toastsEnabled: $("bh-set-toasts").checked,
+                    refreshSec: parseInt($("bh-set-refresh").value, 10),
+                    watchlistIntervalSec: Math.max(1, Math.min(600, parseInt($("bh-set-watch-int").value, 10) || 5)),
+                    pauseOnLowEnergy: $("bh-set-pause-energy").checked,
+                    minEnergy: Math.max(0, Math.min(1000, parseInt($("bh-set-min-energy").value, 10) || 0)),
+                    pauseInHospital: $("bh-set-pause-hosp").checked,
+                    pauseInJail: $("bh-set-pause-jail").checked,
+                    pauseWhileTraveling: $("bh-set-pause-travel").checked,
                     notifications: {
                         position,
                         width:      this._clampInt(widthInput.value,                widthFloor, 640, 300),
@@ -3381,15 +3398,31 @@ table.bh-table{width:100%;border-collapse:collapse}
                     },
                 });
                 this.toaster.applySettings();
+                this._restartLoopFromSettings();
             };
-            ["bh-set-toasts",
+            ["bh-set-refresh", "bh-set-watch-int", "bh-set-toasts",
              "bh-set-notif-pos", "bh-set-notif-width", "bh-set-notif-max", "bh-set-notif-timeout",
              "bh-set-notif-f-level", "bh-set-notif-f-reward", "bh-set-notif-f-ff",
-             "bh-set-notif-f-bs", "bh-set-notif-f-status", "bh-set-notif-f-location", "bh-set-notif-f-blacklist"]
-                .forEach((id) => { const el = $(id); if (el) el.addEventListener("change", persistUIUX); });
+             "bh-set-notif-f-bs", "bh-set-notif-f-status", "bh-set-notif-f-location", "bh-set-notif-f-blacklist",
+             "bh-set-pause-energy", "bh-set-min-energy",
+             "bh-set-pause-hosp", "bh-set-pause-jail", "bh-set-pause-travel"]
+                .forEach((id) => { const el = $(id); if (el) el.addEventListener("change", persistAlerts); });
+
+            // Live projection hint under the watchlist interval input.
+            const watchIntEl = $("bh-set-watch-int");
+            const projHint = $("bh-watch-proj-hint");
+            const updateProjHint = () => {
+                const iv = Math.max(1, Math.min(600, parseInt(watchIntEl.value, 10) || 5));
+                const k = this.hunter.watchlistCount();
+                if (k === 0) { projHint.textContent = "No targets watched. Click 👁 on a Hunt row."; return; }
+                const proj = projectedWatchCallsPerMin(k, iv);
+                projHint.textContent = `${k} watched → ~${proj} calls/min at ${iv}s${proj >= RATE_WARN ? " ⚠ near the ~100/min limit" : ""}.`;
+            };
+            updateProjHint();
+            watchIntEl.addEventListener("input", updateProjHint);
 
             $("bh-notif-preview").addEventListener("click", () => {
-                persistUIUX();
+                persistAlerts();
                 this.toaster.showMany([{
                     target_id: -1,
                     target_name: "Preview Target",
@@ -3406,8 +3439,8 @@ table.bh-table{width:100%;border-collapse:collapse}
             });
         }
 
-        // ── API tab ────────────────────────────────────────────────────────
-        _renderAPI() {
+        // ── Key tab — Torn + FFScouter keys, debug log, environment ────────
+        _renderKey() {
             const content = this._panel.querySelector("#bh-content");
             const tornKey = KeyResolver.resolveTornKey() || "";
             const pdaNote = KeyResolver.isPDAKey()
