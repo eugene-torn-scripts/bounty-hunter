@@ -1,7 +1,8 @@
 # Bounty Hunter — Torn forum post
 
 This is the live forum post content (Tools & Userscripts subforum). Screenshots
-are already uploaded to Torn's editor and linked below.
+are already uploaded to Torn's editor and linked below. All body text is set to
+14px minimum; section headers are 16px.
 
 Uploaded screenshots in use:
 
@@ -22,7 +23,7 @@ Uploaded screenshots in use:
   >
 </p>
 <p>&nbsp;</p>
-<p>
+<p style="font-size: 14px;">
   The bounty board is a mess &mdash; a thousand targets, most too strong, plenty you <em>can't even attack</em>, and the
   good ones vanish in seconds. This script filters the whole board in real time so you only see bounties
   <em>actually worth taking</em>, and pops a clickable alert the instant a new one appears.
@@ -33,7 +34,7 @@ Uploaded screenshots in use:
 <p>
   <span style="font-size: 16px;"><strong>📝 Latest updates</strong></span>
 </p>
-<ul>
+<ul style="font-size: 14px;">
   <li>
     <strong>2026-07-01</strong> &mdash; <strong>Med-out watchlist</strong> (alert when a hospitalised target gets out),
     <strong>presence dots</strong> (🟢/🟠/⚪), and a live <strong>API-call counter</strong>. Fixed toasts not firing on
@@ -60,7 +61,7 @@ Uploaded screenshots in use:
 <p>
   <span style="font-size: 16px;"><strong>🎯 What it does</strong></span>
 </p>
-<ul>
+<ul style="font-size: 14px;">
   <li>Pulls the <strong>entire</strong> bounty board, not just the first page</li>
   <li>Filters by <strong>minimum reward</strong> and <strong>fair-fight score</strong> (via FFScouter)</li>
   <li>
@@ -78,14 +79,14 @@ Uploaded screenshots in use:
   <li>Sortable columns, &times;N duplicate grouping, desktop <em>and</em> Torn PDA</li>
 </ul>
 <p>&nbsp;</p>
-<blockquote><strong>Claim the ones worth claiming.</strong></blockquote>
+<blockquote style="font-size: 14px;"><strong>Claim the ones worth claiming.</strong></blockquote>
 <p>&nbsp;</p>
 <hr />
 <p>&nbsp;</p>
 <p>
   <span style="font-size: 16px;"><strong>📋 Hunt tab</strong></span>
 </p>
-<p>
+<p style="font-size: 14px;">
   Live-filtered list: name, level, reward, FF, BS estimate, status, attack button. Click a header to sort. Hit
   <strong>Refresh now</strong> or let it auto-poll.
 </p>
@@ -102,7 +103,7 @@ Uploaded screenshots in use:
 <p>
   <span style="font-size: 16px;"><strong>🔔 Toasts</strong></span>
 </p>
-<p>
+<p style="font-size: 14px;">
   New matches pop a card in the page corner &mdash; name, reward, FF, status. Click it to jump to the attack page. Up to
   3 at once on desktop; extras roll into a <strong>+N more</strong> card. Configurable position, size, and count.
 </p>
@@ -119,7 +120,7 @@ Uploaded screenshots in use:
 <p>
   <span style="font-size: 16px;"><strong>👁 Med-out watchlist</strong></span>
 </p>
-<p>
+<p style="font-size: 14px;">
   Target sitting in hospital? Click <strong>👁</strong> on their row. The script polls them on a fast interval (down to
   1s) and alerts you the instant they med out &mdash; the moment the board wouldn't re-notify you. They drop off once
   the bounty is gone or shrinks. Only the tab you're looking at polls, so watch a few, not fifty &mdash; the live API
@@ -128,22 +129,17 @@ Uploaded screenshots in use:
 </p>
 <p>&nbsp;</p>
 <p>
-  <span style="font-size: 16px;"><strong>⚙️ Settings&nbsp;</strong></span>
+  <span style="font-size: 16px;"><strong>⚙️ Settings</strong></span>
 </p>
-<ul>
+<ul style="font-size: 14px;">
   <li>Min reward, FF min/max, hospital window</li>
   <li>Auto-refresh interval, and watchlist poll interval (with a calls/min estimate)</li>
   <li>Include unknown-FF targets; toast on/off + appearance</li>
   <li>Master search switch; pause on low energy or while you're in hospital / jail / travelling</li>
   <li>Blacklist players (browser-local, copy/paste between devices)</li>
 </ul>
-<p>
-  <span style="font-size: 14px;"
-    ><em
-      >Full disclosure: the Settings tab is a bit of a mess right now &mdash; not pretty enough for a screenshot yet. A
-      cleanup (and a proper screenshot) is coming soon.</em
-    ></span
-  >
+<p style="font-size: 14px;">
+  The Settings tab looks a bit messy right now, so I'm not adding a screenshot yet. I'll tidy it up and add one soon.
 </p>
 <p>&nbsp;</p>
 <hr />
@@ -151,7 +147,7 @@ Uploaded screenshots in use:
 <p>
   <span style="font-size: 16px;"><strong>⚠️ Watch your API budget</strong></span>
 </p>
-<p>
+<p style="font-size: 14px;">
   Torn allows <strong>100 calls/min per key</strong>. Each refresh costs ~10 for the board, 1 for FFScouter, and
   <strong>1 per surviving target</strong> &mdash; loose filters + a 30s interval <strong>will</strong> rate-limit you
   (and every other script sharing your key). Keep min reward at <strong>$500k+</strong>, FF around
@@ -163,7 +159,7 @@ Uploaded screenshots in use:
 <p>
   <span style="font-size: 16px;"><strong>⚡ Setup &mdash; 60 seconds</strong></span>
 </p>
-<ol>
+<ol style="font-size: 14px;">
   <li>Install the script (link below)</li>
   <li>Click the 🎯 button in your footer bar</li>
   <li>Paste your <strong>Public</strong> Torn API key (offers to reuse Supply Pack Analyzer's key if installed)</li>
@@ -172,7 +168,7 @@ Uploaded screenshots in use:
     <a href="https://ffscouter.com" target="_blank" rel="noopener">ffscouter.com</a>
   </li>
 </ol>
-<p>
+<p style="font-size: 14px;">
   <strong>Note:</strong> the footer button only shows on the <strong>new chat (3.0)</strong>. If you're still on the
   <strong>old chat (2.0)</strong>, switch to 3.0 or the button won't appear.
 </p>
@@ -190,7 +186,7 @@ Uploaded screenshots in use:
 <p>
   <span style="font-size: 16px;"><strong>💚 Like it?</strong></span>
 </p>
-<p>
+<p style="font-size: 14px;">
   Send a Xanax to <a href="/profiles.php?XID=4192025" target="_blank" rel="noopener">eugene_s [4192025]</a> with
   <strong>"bounty"</strong> or <strong>"hunt"</strong> in the message &mdash; donors get a small dismissable thank-you
   note on the Hunt tab.
@@ -199,7 +195,7 @@ Uploaded screenshots in use:
 <p>
   <span style="font-size: 16px;"><strong>🔒 Privacy</strong></span>
 </p>
-<p>
+<p style="font-size: 14px;">
   Your API keys <strong>never leave your browser</strong> &mdash; the script talks straight to
   <code>api.torn.com</code> and <code>ffscouter.com</code>. The only other call sends just your Torn id (no key, no PII)
   to light up the donor thank-you note.
@@ -221,8 +217,10 @@ Uploaded screenshots in use:
 </p>
 <p>&nbsp;</p>
 <p style="text-align: center;">
-  <em>Works with Tampermonkey, Violentmonkey, or compatible managers. Torn PDA supported.</em> <br /><em
-    >Feedback and suggestions welcome &mdash; reply here or message me in-game.</em
+  <span style="font-size: 14px;"
+    ><em>Works with Tampermonkey, Violentmonkey, or compatible managers. Torn PDA supported.</em> <br /><em
+      >Feedback and suggestions welcome &mdash; reply here or message me in-game.</em
+    ></span
   >
 </p>
 ```
