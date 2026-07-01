@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.11.0
+// @version      1.12.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.11.0";
+    const VERSION = "1.12.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -132,6 +132,15 @@
         minFF:    1.0,
         maxFF:    3.0,
         hospitalMaxMin: 5,
+        // When on, hospitalised targets match regardless of remaining hospital
+        // time — the "Hospital max" minutes cap is ignored. Default off so the
+        // existing behaviour (queue only near-out targets) is unchanged.
+        hospNoLimit: false,
+        // Country filter. Default on = only surface targets in the same country
+        // as you (reachable from an attack page right now). Off includes
+        // different-country targets and in-transit ("Traveling"/"Abroad") ones —
+        // not attackable until you're co-located, shown for planning/awareness.
+        sameCountryOnly: true,
         refreshSec: 60,
         toastsEnabled: true,
         includeUnknownFF: false,
@@ -278,6 +287,21 @@
             const s = rem % 60;
             if (m === 0) return `🏥 ${s}s`;
             return `🏥 ${m}m ${s}s`;
+        },
+        // Single source of truth for a match's status badge (text + CSS class +
+        // optional live-countdown attr), shared by the toast, the table row and
+        // any other status render site so they never drift.
+        statusMeta(b) {
+            switch (b.statusState) {
+                case "Hospital":
+                    return { text: this.hospLabel(b.hospUntil), cls: "bh-badge-hosp", attr: ` data-hosp-until="${b.hospUntil}"` };
+                case "Traveling":
+                    return { text: "✈ Traveling", cls: "bh-badge-travel", attr: "" };
+                case "Abroad":
+                    return { text: b.abroadWhere ? `✈ ${escHtml(b.abroadWhere)}` : "✈ Abroad", cls: "bh-badge-travel", attr: "" };
+                default:
+                    return { text: "Okay", cls: "bh-badge-ok", attr: "" };
+            }
         },
     };
 
@@ -1364,7 +1388,7 @@
                 // "Traveling") or the target's (unknown hospital adjective),
                 // the filter falls open so we don't silently drop everyone.
                 const targetCountry = getPlayerCountry(p.status);
-                if (this.myCountry && targetCountry && targetCountry !== this.myCountry) {
+                if (this.settings.sameCountryOnly && this.myCountry && targetCountry && targetCountry !== this.myCountry) {
                     counts.differentCountry++;
                     continue;
                 }
@@ -1394,8 +1418,12 @@
                 }
                 if (state === "Okay") {
                     matches.push({ ...row, statusState: "Okay", hospUntil: 0 });
-                } else if (state === "Hospital" && remaining <= hospWindowSec) {
+                } else if (state === "Hospital" && (this.settings.hospNoLimit || remaining <= hospWindowSec)) {
                     matches.push({ ...row, statusState: "Hospital", hospUntil: until });
+                } else if (!this.settings.sameCountryOnly && (state === "Abroad" || state === "Traveling")) {
+                    // Only surfaced in "include all locations" mode — unattackable
+                    // until you're co-located, shown for planning/awareness.
+                    matches.push({ ...row, statusState: state, hospUntil: 0, abroadWhere: targetCountry || null });
                 }
             }
             matches.sort((a, b) => b.reward - a.reward);
@@ -1618,10 +1646,10 @@
             const showBS = fields.bs !== false;
             const showStatus = fields.status !== false;
             const showBlacklist = fields.blacklist === true;
-            const isHosp = b.statusState === "Hospital";
-            const statusLabel = isHosp ? fmt.hospLabel(b.hospUntil) : "Okay";
-            const statusClass = isHosp ? "bh-badge-hosp" : "bh-badge-ok";
-            const hospAttr = isHosp ? ` data-hosp-until="${b.hospUntil}"` : "";
+            const sm = fmt.statusMeta(b);
+            const statusLabel = sm.text;
+            const statusClass = sm.cls;
+            const hospAttr = sm.attr;
             const countBadge = b.bountyCount > 1
                 ? ` <span class="bh-count">×${b.bountyCount}</span>`
                 : "";
@@ -1915,6 +1943,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
 .bh-badge-ok{background:#1e3a2a;color:#4caf50}
 .bh-badge-hosp{background:#3a2a1e;color:#ffb74d}
+.bh-badge-travel{background:#1e2a3a;color:#64b5f6}
 .bh-count{display:inline-block;padding:1px 6px;margin-left:6px;background:#3a2a4a;color:#c49cff;border-radius:8px;font-size:10px;font-weight:700;vertical-align:middle}
 .bh-empty{text-align:center;color:#888;padding:30px 8px;font-size:14px}
 .bh-empty button{margin-top:10px}
@@ -1982,6 +2011,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-chip{background:#2a2a2a;border:1px solid #3a3a3a;padding:2px 8px;border-radius:10px;font-size:11px;color:#bbb}
 .bh-chip.bh-badge-ok{background:#1e3a2a;color:#4caf50;border-color:#1e3a2a}
 .bh-chip.bh-badge-hosp{background:#3a2a1e;color:#ffb74d;border-color:#3a2a1e}
+.bh-chip.bh-badge-travel{background:#1e2a3a;color:#64b5f6;border-color:#1e2a3a}
 .bh-toast-attack{width:100%;padding:6px 10px;background:#ef5350;color:#fff;border:none;border-radius:4px;
   cursor:pointer;font-weight:600;font-size:12px}
 .bh-toast-attack:hover{background:#f44336}
@@ -2441,9 +2471,10 @@ table.bh-table{width:100%;border-collapse:collapse}
         }
 
         _renderRow(b) {
-            const statusClass = b.statusState === "Hospital" ? "bh-badge-hosp" : "bh-badge-ok";
-            const hospAttr = b.statusState === "Hospital" ? ` data-hosp-until="${b.hospUntil}"` : "";
-            const statusText = b.statusState === "Hospital" ? fmt.hospLabel(b.hospUntil) : "Okay";
+            const sm = fmt.statusMeta(b);
+            const statusClass = sm.cls;
+            const hospAttr = sm.attr;
+            const statusText = sm.text;
             const ffCell = b.ff == null ? "—" : b.ff.toFixed(2);
             const countBadge = b.bountyCount > 1
                 ? ` <span class="bh-count">×${b.bountyCount}</span>`
@@ -2765,8 +2796,9 @@ table.bh-table{width:100%;border-collapse:collapse}
                         </div>
                         <div class="bh-field">
                             <label>Hospital max (minutes remaining)</label>
-                            <input id="bh-set-hosp" class="bh-input" type="number" min="0" max="60" step="1" value="${s.hospitalMaxMin}">
-                            <span class="bh-hint">0 = Okay only. ~5 lets you queue targets about to leave hospital.</span>
+                            <input id="bh-set-hosp" class="bh-input" type="number" min="0" max="10080" step="1" value="${s.hospitalMaxMin}"${s.hospNoLimit ? " disabled" : ""}>
+                            <span class="bh-hint">0 = Okay only. ~5 lets you queue targets about to leave hospital. Up to 10080 (1 week).</span>
+                            <label class="bh-check" style="margin-top:4px"><input type="checkbox" id="bh-set-hosp-nolimit"${s.hospNoLimit ? " checked" : ""}> No hospital time limit (include all hospitalised)</label>
                         </div>
                         <div class="bh-field">
                             <label>Fair-fight min</label>
@@ -2777,6 +2809,8 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <input id="bh-set-ffmax" class="bh-input" type="number" min="1" max="10" step="0.1" value="${s.maxFF}">
                         </div>
                     </div>
+                    <label class="bh-check" style="margin-top:8px"><input type="checkbox" id="bh-set-samecountry"${s.sameCountryOnly ? " checked" : ""}> Only targets in my country</label>
+                    <p class="bh-hint">On (default): hides targets in a different country — only ones you can attack right now. Off: includes different-country and in-transit (travelling/abroad) targets too, marked with a ✈ badge. Those aren't attackable until you're in the same country.</p>
                 </div>
 
                 <div class="bh-section">
@@ -2816,7 +2850,9 @@ table.bh-table{width:100%;border-collapse:collapse}
                 const cleanMax = Number.isFinite(maxFF) ? Math.max(cleanMin, maxFF) : cleanMin;
                 this.hunter.updateSettings({
                     minPrice: Math.max(0, parseInt($("bh-set-price").value, 10) || 0),
-                    hospitalMaxMin: Math.max(0, Math.min(60, parseInt($("bh-set-hosp").value, 10) || 0)),
+                    hospitalMaxMin: Math.max(0, Math.min(10080, parseInt($("bh-set-hosp").value, 10) || 0)),
+                    hospNoLimit: $("bh-set-hosp-nolimit").checked,
+                    sameCountryOnly: $("bh-set-samecountry").checked,
                     minFF: cleanMin,
                     maxFF: cleanMax,
                     refreshSec: parseInt($("bh-set-refresh").value, 10),
@@ -2830,10 +2866,16 @@ table.bh-table{width:100%;border-collapse:collapse}
                 });
                 this._restartLoopFromSettings();
             };
-            ["bh-set-price", "bh-set-hosp", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-unkff",
+            ["bh-set-price", "bh-set-hosp", "bh-set-hosp-nolimit", "bh-set-samecountry", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-unkff",
              "bh-set-enabled", "bh-set-pause-energy", "bh-set-min-energy",
              "bh-set-pause-hosp", "bh-set-pause-jail", "bh-set-pause-travel"]
                 .forEach((id) => $(id).addEventListener("change", persistScript));
+
+            // Grey out the numeric cap while "no hospital time limit" is on —
+            // its value is ignored in that mode.
+            $("bh-set-hosp-nolimit").addEventListener("change", (e) => {
+                $("bh-set-hosp").disabled = e.target.checked;
+            });
 
             $("bh-reset").addEventListener("click", () => {
                 if (!confirm("Reset filters to defaults?")) return;
