@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.14.1
+// @version      1.15.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.14.1";
+    const VERSION = "1.15.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -953,6 +953,7 @@
             this.blacklist = loadBlacklist();
             this.watchlist = loadWatchlist();
             this._watchTimer = null;
+            this._watchNextAt = 0;
             this._watchRunning = false;
             this.onWatchToast = null;   // ui/toaster sets this — med-out alert
             this.myUserId = null;
@@ -961,13 +962,16 @@
             this.myCountry = null;      // "Torn" | "<country>" | null — drives country filter
             this.lastMatches = [];      // last render's rows
             this.lastMatchIds = new Set();
-            // The first apply after a Hunter is constructed (or settings
-            // changed) seeds lastMatchIds silently rather than firing a toast
-            // for every current match. Without this, a cold-starting tab that
-            // free-rides on another tab's cached shared data spams toasts for
-            // bounties the user already saw — including ones they've already
-            // claimed, where the cached reward is now stale.
+            // The first apply from ANOTHER tab's shared data seeds lastMatchIds
+            // silently rather than firing a toast for every cached match — that
+            // data can be stale (already-claimed bounties). A cold-start's own
+            // fresh refresh() is NOT suppressed, so the user still gets toasts
+            // for the bounties that are actionable the moment they open Torn.
             this._firstApplyDone = false;
+            // Set true by a filter/settings change so the very next apply
+            // re-seeds silently — avoids re-toasting matches already on screen
+            // under the previous filter. Consumed (reset) by _applyMatches.
+            this._reseedSilent = false;
             this.lastCounts = null;     // { total, afterBasic, afterFF, withFF, ffNull, ffError, statusBreakdown }
             this._statusCache = new Map(); // id → { data, fetchedAt }
             this._timer = null;
@@ -991,7 +995,7 @@
             // filter tweak doesn't bombard the user with toasts for matches
             // that were already on screen under the previous filter.
             this.lastMatchIds = new Set();
-            this._firstApplyDone = false;
+            this._reseedSilent = true;
             // Invalidate the cross-tab cache — its matches were computed with the
             // previous filters, so neither this tab nor its siblings should reuse it.
             try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
@@ -1130,7 +1134,13 @@
 
         _scheduleWatch(delayMs) {
             if (this._watchTimer) clearTimeout(this._watchTimer);
+            this._watchNextAt = Date.now() + delayMs;
             this._watchTimer = setTimeout(() => this._watchTick(), delayMs);
+        }
+
+        secondsUntilWatchPoll() {
+            if (!this._watchRunning || !this._watchNextAt) return 0;
+            return Math.max(0, Math.round((this._watchNextAt - Date.now()) / 1000));
         }
 
         // Called on visibilitychange when this tab becomes visible — the
@@ -1250,7 +1260,7 @@
         applyExternalSettings(next) {
             this.settings = { ...this.settings, ...next };
             this.lastMatchIds = new Set();
-            this._firstApplyDone = false;
+            this._reseedSilent = true;
             // Stop unconditionally, then let start() self-gate. Mirrors the
             // local persistFilters() path.
             this.stop();
@@ -1319,12 +1329,20 @@
         //     a toast, even if a path other than _tick reaches us (e.g. a
         //     manual refresh or a sibling tab's storage event). Defense in
         //     depth on top of the gate in _tick.
-        _applyMatches(matches) {
+        _applyMatches(matches, fromShared = false) {
             const matchKey = (m) => `${m.target_id}|${m.reward}`;
             const currentIds = new Set(matches.map(matchKey));
             const firstApply = !this._firstApplyDone;
             this._firstApplyDone = true;
-            const suppressed = firstApply || this.pausedReason === "low-energy";
+            // Suppress toasts only when the batch isn't trustworthy-new:
+            //  - first apply sourced from another tab's shared data (may be
+            //    stale/claimed) — but NOT a cold-start's own fresh refresh
+            //  - the apply right after a filter change (re-seed silently)
+            //  - energy pause
+            const suppressed = (firstApply && fromShared)
+                || this._reseedSilent
+                || this.pausedReason === "low-energy";
+            this._reseedSilent = false;
             if (!suppressed && this.settings.toastsEnabled && this.onToast) {
                 const newOnes = matches.filter((m) => !this.lastMatchIds.has(matchKey(m)));
                 if (newOnes.length > 0) this.onToast(newOnes);
@@ -1349,7 +1367,7 @@
             if (Array.isArray(s.matches)) {
                 this.lastCounts = s.lastCounts || null;
                 this.partialFromRateLimit = false; // _writeShared only fires on full cycles
-                this._applyMatches(s.matches);
+                this._applyMatches(s.matches, true);
             }
             if (this.onUpdate) this.onUpdate();
         }
@@ -1461,7 +1479,7 @@
                     this.lastCounts = shared.lastCounts || null;
                     this.lastError = null;
                     this.partialFromRateLimit = false; // _writeShared only fires on full cycles
-                    this._applyMatches(shared.matches || []);
+                    this._applyMatches(shared.matches || [], true);
                     if (this.onUpdate) this.onUpdate();
                 } else {
                     const delaySec = await this.refresh();
@@ -1666,6 +1684,9 @@
                         .reduce((n, x) => n + ((typeof x.quantity === "number" && x.quantity > 0) ? x.quantity : 1), 0);
                     if (liveQty > 0) row = { ...b, bountyCount: liveQty };
                 }
+                // Online/idle/offline — from the same profile snapshot, so it
+                // rides through to the row (and the shared payload) for free.
+                row = { ...row, lastAction: p.lastAction || null };
                 // Location marker — set when the target is somewhere you can't
                 // attack from right now. "In transit" for mid-flight targets
                 // (country unknown), otherwise their country name.
@@ -1751,6 +1772,9 @@
                                 status: profile.status || null,
                                 age: typeof profile.age === "number" ? profile.age : null,
                                 faction_id: profile.faction_id || null,
+                                // "Online" | "Idle" | "Offline" — rides the same
+                                // profile call, so the row dot costs no extra request.
+                                lastAction: (profile.last_action && profile.last_action.status) || null,
                                 // Per-target bounty rows from the SAME snapshot as
                                 // status. null = the call didn't return a bounties
                                 // array (treated as "unknown", we don't reconcile);
@@ -2207,6 +2231,10 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-attack:hover{background:#f44336}
 .bh-name-link{color:#4fc3f7!important;text-decoration:none}
 .bh-name-link:hover{text-decoration:underline}
+.bh-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:middle;flex-shrink:0}
+.bh-dot-on{background:#4caf50;box-shadow:0 0 4px rgba(76,175,80,.7)}
+.bh-dot-idle{background:#ffb74d}
+.bh-dot-off{background:#666}
 .bh-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600}
 .bh-badge-ok{background:#1e3a2a;color:#4caf50}
 .bh-badge-hosp{background:#3a2a1e;color:#ffb74d}
@@ -2439,6 +2467,8 @@ table.bh-table{width:100%;border-collapse:collapse}
                         cEl.textContent = `API ${n}/min`;
                         cEl.className = n >= RATE_WARN ? "bh-api-counter warn" : "bh-api-counter";
                     }
+                    const wEl = document.getElementById("bh-wl-countdown");
+                    if (wEl) wEl.textContent = this.hunter.secondsUntilWatchPoll();
                 }
                 document.querySelectorAll("[data-hosp-until]").forEach((el) => {
                     const until = parseInt(el.dataset.hospUntil, 10);
@@ -2829,12 +2859,23 @@ table.bh-table{width:100%;border-collapse:collapse}
                 <div class="bh-watchlist">
                     <div class="bh-wl-head">
                         <span>👁 Watching ${ids.length} for med-out</span>
+                        <span class="bh-wl-hint">Next poll in <span id="bh-wl-countdown">${this.hunter.secondsUntilWatchPoll()}</span>s</span>
                         <span class="${projCls}" title="Estimated requests/min this watchlist adds at the current interval (${intervalSec}s), accounting for the 750ms call gate.">~${proj}/min</span>
-                        <span class="bh-wl-hint">polls every ${intervalSec}s · visible tab only</span>
+                        <span class="bh-wl-hint">every ${intervalSec}s · visible tab only</span>
                     </div>
                     <div class="bh-wl-items">${items}</div>
                 </div>
             `;
+        }
+
+        // Presence dot from the profile's last_action.status. No dot when
+        // unknown (e.g. a row seeded from older shared data without the field).
+        _onlineDot(lastAction) {
+            const cls = lastAction === "Online" ? "on"
+                : lastAction === "Idle" ? "idle"
+                : lastAction === "Offline" ? "off" : "";
+            if (!cls) return "";
+            return `<span class="bh-dot bh-dot-${cls}" title="${escHtml(lastAction)}"></span>`;
         }
 
         _renderRow(b) {
@@ -2852,7 +2893,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             return `
                 <tr>
                     <td>
-                        <a class="bh-name-link" href="${PROFILE_URL}${b.target_id}" target="_blank" rel="noopener">${escHtml(b.target_name)}</a>
+                        ${this._onlineDot(b.lastAction)}<a class="bh-name-link" href="${PROFILE_URL}${b.target_id}" target="_blank" rel="noopener">${escHtml(b.target_name)}</a>
                         <span style="color:#666;font-size:11px"> L${b.target_level}</span>${countBadge}
                     </td>
                     <td class="num">${escHtml(fmt.moneyFull(b.reward))}</td>
