@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.16.1
+// @version      1.16.2
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.16.1";
+    const VERSION = "1.16.2";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -2342,15 +2342,6 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-search-toggle.off{background:#3a2a1e;color:#ffb74d}
 .bh-search-toggle.off:hover{background:#4a3626}
 
-/* Inline "?" help badge — instant CSS tooltip (hover on desktop, tap on mobile) */
-.bh-q{position:relative;display:inline-block;width:15px;height:15px;line-height:15px;text-align:center;border-radius:50%;background:#333;color:#aaa;font-size:10px;font-weight:700;cursor:help;vertical-align:middle}
-.bh-q:hover,.bh-q.show{background:#4fc3f7;color:#111}
-.bh-q::after{content:attr(data-tip);position:absolute;left:50%;bottom:calc(100% + 7px);transform:translateX(-50%);
-  width:230px;max-width:62vw;background:#0d0d0d;color:#e0e0e0;border:1px solid #4fc3f7;border-radius:6px;padding:8px 10px;
-  font-size:12px;font-weight:400;line-height:1.4;text-align:left;white-space:normal;z-index:100;
-  opacity:0;visibility:hidden;pointer-events:none;transition:opacity .07s;box-shadow:0 4px 14px rgba(0,0,0,.55)}
-.bh-q:hover::after,.bh-q.show::after{opacity:1;visibility:visible}
-
 /* Inline field row (e.g. FF min–max) */
 .bh-inline{display:flex;align-items:center;gap:6px}
 
@@ -2470,24 +2461,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                 this.activeTab = t.dataset.tab;
                 this._syncTabs();
                 this._renderActive();
-            });
-
-            // Help "?" badges: tap toggles the tooltip (mobile has no hover) and
-            // must NOT toggle the checkbox the badge sits inside — preventDefault
-            // cancels the label activation, stopPropagation keeps it local. A tap
-            // anywhere else in the panel closes any open tip. Desktop still gets
-            // the instant CSS :hover tooltip for free.
-            panel.addEventListener("click", (e) => {
-                const q = e.target.closest(".bh-q");
-                if (q) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const open = q.classList.contains("show");
-                    panel.querySelectorAll(".bh-q.show").forEach((el) => el.classList.remove("show"));
-                    if (!open) q.classList.add("show");
-                    return;
-                }
-                panel.querySelectorAll(".bh-q.show").forEach((el) => el.classList.remove("show"));
             });
 
             // Hook hunter updates → UI refresh.
@@ -3247,22 +3220,25 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <input id="bh-set-price" class="bh-input" type="number" min="0" step="10000" value="${s.minPrice}">
                         </div>
                         <div class="bh-field">
-                            <label>Fair-fight range <span class="bh-q" data-tip="Lower = easier target. 1.0–3.0 is the sweet spot for respect.">?</span></label>
+                            <label>Fair-fight range</label>
                             <div class="bh-inline">
                                 <input id="bh-set-ffmin" class="bh-input" type="number" min="1" max="10" step="0.1" value="${s.minFF}" style="max-width:80px">
                                 <span style="color:#888">–</span>
                                 <input id="bh-set-ffmax" class="bh-input" type="number" min="1" max="10" step="0.1" value="${s.maxFF}" style="max-width:80px">
                             </div>
+                            <span class="bh-hint">Lower = easier. 1.0–3.0 is the respect sweet spot.</span>
                         </div>
                         <div class="bh-field">
-                            <label>Hospital window (min left) <span class="bh-q" data-tip="0 = Okay targets only. ~5 queues targets about to leave hospital. Max 10080 (1 week).">?</span></label>
+                            <label>Hospital window (min left)</label>
                             <input id="bh-set-hosp" class="bh-input" type="number" min="0" max="10080" step="1" value="${s.hospitalMaxMin}"${s.hospNoLimit ? " disabled" : ""}>
                             <label class="bh-check" style="margin-top:4px"><input type="checkbox" id="bh-set-hosp-nolimit"${s.hospNoLimit ? " checked" : ""}> No limit (all hospitalised)</label>
+                            <span class="bh-hint">0 = Okay only. ~5 queues targets about to get out.</span>
                         </div>
                         <div class="bh-field">
                             <label>Reachability</label>
-                            <label class="bh-check"><input type="checkbox" id="bh-set-samecountry"${s.sameCountryOnly ? " checked" : ""}> Only targets in my country <span class="bh-q" data-tip="On: hides abroad / in-transit targets you can't attack right now. Off: shows them with a ✈ badge.">?</span></label>
-                            <label class="bh-check" style="margin-top:4px"><input type="checkbox" id="bh-set-unkff"${s.includeUnknownFF ? " checked" : ""}> Include unknown-FF targets <span class="bh-q" data-tip="Shows targets FFScouter has no fair-fight data for. Handy if you have no FFScouter key.">?</span></label>
+                            <label class="bh-check"><input type="checkbox" id="bh-set-samecountry"${s.sameCountryOnly ? " checked" : ""}> Only targets in my country</label>
+                            <label class="bh-check" style="margin-top:4px"><input type="checkbox" id="bh-set-unkff"${s.includeUnknownFF ? " checked" : ""}> Include unknown-FF targets</label>
+                            <span class="bh-hint">"My country" hides abroad / in-transit targets. "Unknown-FF" shows targets with no FF data (use without an FF key).</span>
                         </div>
                     </div>
                 </div>
@@ -3355,7 +3331,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <span class="bh-hint">60 s is comfortably under the rate limit.</span>
                         </div>
                         <div class="bh-field">
-                            <label>Watchlist poll (seconds) <span class="bh-q" data-tip="How often watched targets are checked for med-out. Min 1s. Each watched target is one request per poll; the Hunt tab shows live calls/min.">?</span></label>
+                            <label>Watchlist poll (seconds)</label>
                             <input id="bh-set-watch-int" class="bh-input" type="number" min="1" max="600" step="1" value="${Math.max(1, Number(s.watchlistIntervalSec) || 5)}">
                             <span class="bh-hint" id="bh-watch-proj-hint"></span>
                         </div>
