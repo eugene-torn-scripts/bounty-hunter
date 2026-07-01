@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.13.0
-// @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status — with clickable attack toasts. Desktop + Torn PDA.
+// @version      1.14.0
+// @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
@@ -48,7 +48,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.13.0";
+    const VERSION = "1.14.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -59,7 +59,13 @@
         donorAck:  "bh_donorAck",    // unix-ts of last donation the user dismissed the banner for
         userId:    "bh_userId",      // resolved Torn user id (cached so DonorClient doesn't race Hunter.start)
         blacklist: "bh_blacklist",   // { "<id>": { name, note, addedAt } } — players excluded from matches
+        watchlist: "bh_watchlist",   // { "<id>": { name, reward, lastState, addedAt } } — med-out watch targets
+        apiCallPrefix: "bh_apiCalls_", // per-tab ring of recent API-call timestamps; summed cross-tab for the rate counter
     };
+    // Every open BH tab records its own API-call timestamps under a distinct
+    // key so the rolling rate counter can sum across tabs without a
+    // read-modify-write race on one shared array. The id is per page load.
+    const TAB_ID = Math.random().toString(36).slice(2, 10);
     // Cloudflare Worker that powers the donor "thank-you" banner. Read-only,
     // takes only the requester's Torn user id (no API key, no PII), returns
     // { donor, lastDonationTs }. Cached for 6h in localStorage and shared
@@ -142,6 +148,11 @@
         // not attackable until you're co-located, shown for planning/awareness.
         sameCountryOnly: true,
         refreshSec: 60,
+        // Med-out watchlist poll interval, seconds. Floor 1. Each watched
+        // target costs one request per poll; with the 750 ms global gate the
+        // real cadence for K targets is ~max(interval, K*0.75s). The Hunt-tab
+        // counter warns when total calls approach Torn's ~100/min ceiling.
+        watchlistIntervalSec: 5,
         toastsEnabled: true,
         includeUnknownFF: false,
         // Master kill-switch for the refresh loop. When off, auto-refresh
@@ -442,6 +453,89 @@
         return added;
     }
 
+    // ════════════════════════════════════════════════════════════
+    //  WATCHLIST — per-browser list of bounty targets to poll fast
+    //  for a hospital→okay ("med-out") transition. Schema:
+    //    { "<numericId>": { name, reward, lastState, addedAt } }
+    //  Stored under LS.watchlist; cross-tab sync via the storage event.
+    // ════════════════════════════════════════════════════════════
+
+    function loadWatchlist() {
+        try {
+            const raw = localStorage.getItem(LS.watchlist);
+            if (!raw) return {};
+            const parsed = JSON.parse(raw);
+            return (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {};
+        } catch { return {}; }
+    }
+
+    function saveWatchlist(map) {
+        try { localStorage.setItem(LS.watchlist, JSON.stringify(map)); } catch { /* quota */ }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  API-CALL RATE COUNTER — rolling 60 s window, summed across all
+    //  open BH tabs. Each tab appends to its OWN key (no cross-tab RMW
+    //  race); the reader sums every tab's key and drops keys that have
+    //  gone quiet (their owner tab was closed).
+    // ════════════════════════════════════════════════════════════
+
+    const RATE_WINDOW_MS = 60_000;
+    const RATE_WARN = 90;              // Torn's real ceiling is ~100/min
+    const RATE_STALE_MS = 120_000;     // a tab silent this long is treated as gone
+
+    function recordApiCall() {
+        try {
+            const key = LS.apiCallPrefix + TAB_ID;
+            const now = Date.now();
+            let arr = [];
+            try { arr = JSON.parse(localStorage.getItem(key) || "[]"); } catch { arr = []; }
+            if (!Array.isArray(arr)) arr = [];
+            arr.push(now);
+            const cutoff = now - RATE_WINDOW_MS;
+            arr = arr.filter((t) => t >= cutoff);
+            localStorage.setItem(key, JSON.stringify(arr));
+        } catch { /* quota / private mode — counter just under-reports */ }
+    }
+
+    // Total API calls across all tabs in the last 60 s. Side-effect: prunes
+    // this tab's own array and removes keys whose owner tab looks dead.
+    function apiCallsLastMinute() {
+        const now = Date.now();
+        const cutoff = now - RATE_WINDOW_MS;
+        let total = 0;
+        let keys = [];
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.startsWith(LS.apiCallPrefix)) keys.push(k);
+            }
+        } catch { return 0; }
+        for (const k of keys) {
+            let arr = [];
+            try { arr = JSON.parse(localStorage.getItem(k) || "[]"); } catch { arr = []; }
+            if (!Array.isArray(arr) || arr.length === 0) { continue; }
+            const recent = arr.filter((t) => t >= cutoff);
+            const newest = arr[arr.length - 1];
+            if (newest < now - RATE_STALE_MS && k !== LS.apiCallPrefix + TAB_ID) {
+                try { localStorage.removeItem(k); } catch { /* noop */ }
+                continue;
+            }
+            total += recent.length;
+        }
+        return total;
+    }
+
+    // Projected watchlist calls/min for a list size and interval, accounting
+    // for the 750 ms global gate: K targets can't be polled faster than
+    // K*0.75 s, so the effective period is max(interval, K*0.75s).
+    function projectedWatchCallsPerMin(count, intervalSec) {
+        if (count <= 0) return 0;
+        const gateFloorSec = count * (API_DELAY_MS / 1000);
+        const periodSec = Math.max(intervalSec, gateFloorSec);
+        return Math.ceil((count * 60) / periodSec);
+    }
+
     // Open a Torn URL in a way that works on desktop and inside the PDA webview.
     // `window.open` is unreliable in PDA — synthesising an anchor click lets the
     // platform handle the navigation natively (new tab on desktop, in-app on PDA).
@@ -573,6 +667,7 @@
 
         async _get(pathOrUrl, params = null) {
             await this._rateLimit();
+            recordApiCall();
             const isFull = /^https?:\/\//.test(pathOrUrl);
             const url = new URL(isFull ? pathOrUrl : API_BASE + pathOrUrl);
             if (params) for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
@@ -856,6 +951,10 @@
             this.api = api;
             this.settings = loadSettings();
             this.blacklist = loadBlacklist();
+            this.watchlist = loadWatchlist();
+            this._watchTimer = null;
+            this._watchRunning = false;
+            this.onWatchToast = null;   // ui/toaster sets this — med-out alert
             this.myUserId = null;
             this.myUserLevel = null;
             this.myUserAge = null;      // days since our own signup — drives NPP rule
@@ -963,6 +1062,152 @@
             this.blacklist = loadBlacklist();
             this._stripBlacklistedFromMatches();
             if (this.onUpdate) this.onUpdate();
+        }
+
+        // --- Watchlist -----------------------------------------------------
+        isWatched(id) {
+            if (id == null) return false;
+            return Object.prototype.hasOwnProperty.call(this.watchlist, String(Number(id)));
+        }
+
+        watchlistCount() { return Object.keys(this.watchlist).length; }
+
+        // Add a match row to the med-out watchlist. Seeds lastState from the
+        // row's current status so the next poll that flips it to Okay fires
+        // the alert. Starts the poll loop if it wasn't running.
+        addToWatchlist(b) {
+            const key = String(Number(b.target_id));
+            if (!/^\d+$/.test(key) || key === "0") return false;
+            this.watchlist[key] = {
+                name: b.target_name ? String(b.target_name) : (this.watchlist[key] && this.watchlist[key].name) || null,
+                reward: b.reward,
+                lastState: b.statusState || "Hospital",
+                addedAt: Math.floor(Date.now() / 1000),
+            };
+            saveWatchlist(this.watchlist);
+            this.ensureWatchLoop();
+            if (this.onUpdate) this.onUpdate();
+            return true;
+        }
+
+        removeFromWatchlist(id) {
+            const key = String(Number(id));
+            if (!this.watchlist[key]) return false;
+            delete this.watchlist[key];
+            saveWatchlist(this.watchlist);
+            if (this.watchlistCount() === 0) this.stopWatch();
+            if (this.onUpdate) this.onUpdate();
+            return true;
+        }
+
+        // Storage-event handler — another tab changed the watchlist. Re-read
+        // and (re)assess whether this tab should be polling.
+        applyExternalWatchlist() {
+            this.watchlist = loadWatchlist();
+            if (this.watchlistCount() === 0) this.stopWatch();
+            else this.ensureWatchLoop();
+            if (this.onUpdate) this.onUpdate();
+        }
+
+        // Start the watch loop if there's anything to watch and it isn't
+        // already running. Idempotent — safe to call from add, visibility
+        // change, storage event, and boot.
+        ensureWatchLoop() {
+            if (this._watchRunning || this.watchlistCount() === 0) return;
+            this._watchRunning = true;
+            this._scheduleWatch(0);
+        }
+
+        stopWatch() {
+            if (this._watchTimer) { clearTimeout(this._watchTimer); this._watchTimer = null; }
+            this._watchRunning = false;
+        }
+
+        _watchIntervalMs() {
+            const sec = Number(this.settings.watchlistIntervalSec);
+            return Math.max(1, Number.isFinite(sec) ? sec : 5) * 1000;
+        }
+
+        _scheduleWatch(delayMs) {
+            if (this._watchTimer) clearTimeout(this._watchTimer);
+            this._watchTimer = setTimeout(() => this._watchTick(), delayMs);
+        }
+
+        // Called on visibilitychange when this tab becomes visible — the
+        // visible tab owns polling, so kick a tick immediately for a snappy
+        // handoff when the user switches tabs.
+        kickWatchIfVisible() {
+            if (document.visibilityState !== "visible") return;
+            this.watchlist = loadWatchlist(); // adopt anything a sibling added while we were hidden
+            if (this.watchlistCount() === 0) { this.stopWatch(); return; }
+            this._watchRunning = true;
+            this._scheduleWatch(0);
+        }
+
+        async _watchTick() {
+            if (!this._watchRunning) return;
+            const interval = this._watchIntervalMs();
+            // Only the visible tab polls. A hidden tab keeps a cheap heartbeat
+            // timer alive (throttled by the engine anyway) so it can resume
+            // instantly on focus, but sends no requests.
+            if (document.visibilityState !== "visible" || !this.api.key || this.watchlistCount() === 0) {
+                if (this.watchlistCount() === 0) { this.stopWatch(); return; }
+                this._scheduleWatch(interval);
+                return;
+            }
+            let changed = false;
+            const ids = Object.keys(this.watchlist);
+            for (const id of ids) {
+                if (!this._watchRunning) break;
+                const entry = this.watchlist[id];
+                if (!entry) continue;
+                try {
+                    const { profile, bounties } = await this.api.fetchUserProfile(Number(id));
+                    if (!this.watchlist[id]) continue; // removed mid-loop
+                    // Drop when the target's own bounty list no longer carries
+                    // the reward we're watching — bounty claimed or expired.
+                    const stillLive = Array.isArray(bounties)
+                        && bounties.some((x) => Number(x.target_id) === Number(id) && x.reward === entry.reward);
+                    if (!stillLive) { delete this.watchlist[id]; changed = true; continue; }
+                    const state = profile && profile.status ? profile.status.state : null;
+                    if (state) {
+                        const prev = entry.lastState;
+                        if (prev && prev !== "Okay" && state === "Okay") {
+                            this._fireMedOut(id, entry, profile);
+                        }
+                        if (state !== prev) { entry.lastState = state; changed = true; }
+                    }
+                } catch (e) {
+                    // Transient (network / rate limit) — keep the entry and try
+                    // again next tick. Don't spam the debug log per-target.
+                    if (isRateLimitError(e)) { logDebug("watchlist poll hit rate limit — backing off", "warn"); break; }
+                }
+            }
+            if (changed) {
+                saveWatchlist(this.watchlist);
+                if (this.onUpdate) this.onUpdate();
+            }
+            if (this.watchlistCount() === 0) { this.stopWatch(); return; }
+            this._scheduleWatch(interval);
+        }
+
+        _fireMedOut(id, entry, profile) {
+            if (!this.onWatchToast) return;
+            this.onWatchToast([{
+                target_id: Number(id),
+                target_name: entry.name || (profile && profile.name) || String(id),
+                target_level: (profile && profile.level) || "?",
+                reward: entry.reward,
+                ff: null,
+                bs: null,
+                statusState: "Okay",
+                hospUntil: 0,
+                bountyCount: 1,
+                awayFromMe: false,
+                location: null,
+                medOut: true,
+            }]);
+            logDebug(`watchlist: ${entry.name || id} is OUT of hospital — alert fired`, "ok");
         }
 
         // Backfill missing display names from anything we observe on the
@@ -1690,8 +1935,13 @@
                        <button class="bh-toast-blacklist" title="Add to blacklist">🚫</button>
                    </div>`
                 : `<button class="bh-toast-attack">Attack →</button>`;
+            const medOutBanner = b.medOut
+                ? `<div class="bh-toast-medout">🏥→✅ Out of hospital — attack now</div>`
+                : "";
+            if (b.medOut) el.classList.add("bh-toast-medout-card");
             el.innerHTML = `
                 <button class="bh-toast-close" title="Dismiss">&times;</button>
+                ${medOutBanner}
                 <div class="bh-toast-head">
                     <div class="bh-toast-name">${escHtml(b.target_name)}${levelSpan}${countBadge}</div>
                     ${rewardCell}
@@ -2044,6 +2294,28 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-row-actions-cell{white-space:nowrap}
 .bh-row-blacklist{margin-left:6px;padding:4px 8px;background:#2a2a2a;color:#ccc;border:1px solid #444;border-radius:4px;cursor:pointer;font-size:13px;line-height:1;vertical-align:middle}
 .bh-row-blacklist:hover{background:#3a2a2a;border-color:#a44;color:#fff}
+.bh-row-watch{margin-left:6px;padding:4px 8px;background:#2a2a2a;color:#ccc;border:1px solid #444;border-radius:4px;cursor:pointer;font-size:13px;line-height:1;vertical-align:middle;filter:grayscale(1);opacity:.75}
+.bh-row-watch:hover{background:#1e3038;border-color:#4fc3f7;color:#fff;opacity:1}
+.bh-row-watch.watching{filter:none;opacity:1;background:#12303a;border-color:#4fc3f7}
+
+/* API-call rate counter (Hunt status line) */
+.bh-api-counter{font-size:11px;color:#7a8a7a;background:#1a231a;border:1px solid #2a3a2a;border-radius:10px;padding:1px 8px;font-variant-numeric:tabular-nums;cursor:default}
+.bh-api-counter.warn{color:#ffb0b0;background:#2f1a1a;border-color:#5a2a2a;font-weight:600}
+
+/* Watchlist strip (above the Hunt table) */
+.bh-watchlist{background:#14232a;border:1px solid #24424f;border-left:3px solid #4fc3f7;border-radius:4px;padding:8px 10px;margin:0 0 10px}
+.bh-wl-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:#cbe6f0;font-weight:600;margin-bottom:6px}
+.bh-wl-proj{font-weight:600;color:#8fd0e6;background:#0f2731;border:1px solid #24424f;border-radius:10px;padding:1px 8px;font-variant-numeric:tabular-nums}
+.bh-wl-proj.warn{color:#ffb0b0;background:#2f1a1a;border-color:#5a2a2a}
+.bh-wl-hint{font-weight:400;color:#7a94a0}
+.bh-wl-items{display:flex;flex-wrap:wrap;gap:8px}
+.bh-wl-item{display:inline-flex;align-items:center;gap:6px;background:#0f2731;border:1px solid #24424f;border-radius:12px;padding:2px 6px 2px 10px;font-size:12px}
+.bh-wl-remove{background:none;border:none;color:#8aa;cursor:pointer;font-size:15px;line-height:1;padding:0 2px}
+.bh-wl-remove:hover{color:#ef5350}
+
+/* Med-out alert toast */
+.bh-toast-medout-card{border-color:#4caf50!important;box-shadow:0 2px 10px rgba(76,175,80,.35)!important}
+.bh-toast-medout{background:#173d22;color:#8ff0a4;font-size:11px;font-weight:700;text-align:center;border-radius:4px;padding:3px 6px;margin-bottom:6px;letter-spacing:.3px}
 
 /* Blacklist section (Script tab) — compact table layout */
 .bh-bl-banner{background:#2a2418;border:1px solid #5a4a28;border-left:3px solid #c08030;border-radius:4px;padding:6px 10px;margin:0 0 8px;color:#eed8b0;font-size:11px;line-height:1.35}
@@ -2146,6 +2418,9 @@ table.bh-table{width:100%;border-collapse:collapse}
             this.hunter.onUpdate = () => { if (this._isOpen()) this._renderActive(); };
             this.hunter.onToast = (bounties) => this.toaster.showMany(bounties);
             this.hunter.onMatchesApplied = (ids) => this.toaster.pruneTo(ids);
+            // Med-out alerts bypass the "new matches" toast master switch —
+            // the user explicitly asked to watch these targets.
+            this.hunter.onWatchToast = (bounties) => this.toaster.showMany(bounties);
 
             // Countdown ticker — updates both the "next refresh in Xs" header
             // and any live hospital-countdown badges (rows + toasts). Ticks
@@ -2154,6 +2429,12 @@ table.bh-table{width:100%;border-collapse:collapse}
                 if (this._isOpen() && this.activeTab === "hunt") {
                     const el = document.getElementById("bh-countdown");
                     if (el) el.textContent = this.hunter.secondsUntilRefresh() + "s";
+                    const cEl = document.getElementById("bh-api-counter");
+                    if (cEl) {
+                        const n = apiCallsLastMinute();
+                        cEl.textContent = `API ${n}/min`;
+                        cEl.className = n >= RATE_WARN ? "bh-api-counter warn" : "bh-api-counter";
+                    }
                 }
                 document.querySelectorAll("[data-hosp-until]").forEach((el) => {
                     const until = parseInt(el.dataset.hospUntil, 10);
@@ -2349,11 +2630,13 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <button id="bh-refresh-btn" class="bh-btn-muted">Refresh now</button>
                     <span>Next refresh in <span id="bh-countdown">${nextIn}</span>s</span>
                     <span>${rows.length} match${rows.length === 1 ? "" : "es"}${isPartial ? ' <span class="bh-rl-pill">partial</span>' : ""}</span>
+                    ${this._apiCounterHtml()}
                     ${errLine}
                     ${ffKeyMissing}
                     ${ffError}
                 </div>
                 ${pausedBanner}
+                ${this._renderWatchStrip()}
                 ${rateLimitBanner}
                 ${rows.length === 0 ? (rateLimited ? "" : `
                     <div class="bh-empty">
@@ -2396,6 +2679,30 @@ table.bh-table{width:100%;border-collapse:collapse}
                 el.addEventListener("click", (e) => {
                     e.preventDefault();
                     this._blacklistWithUndo(el.dataset.id, el.dataset.name);
+                });
+            });
+            content.querySelectorAll(".bh-row-watch").forEach((el) => {
+                el.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    const id = el.dataset.id;
+                    if (this.hunter.isWatched(id)) {
+                        this.hunter.removeFromWatchlist(id);
+                    } else {
+                        this.hunter.addToWatchlist({
+                            target_id: id,
+                            target_name: el.dataset.name,
+                            reward: Number(el.dataset.reward),
+                            statusState: el.dataset.state,
+                        });
+                    }
+                    this._renderHunt();
+                });
+            });
+            content.querySelectorAll(".bh-wl-remove").forEach((el) => {
+                el.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    this.hunter.removeFromWatchlist(el.dataset.id);
+                    this._renderHunt();
                 });
             });
             content.querySelectorAll("th[data-sort]").forEach((el) => {
@@ -2483,6 +2790,49 @@ table.bh-table{width:100%;border-collapse:collapse}
             });
         }
 
+        // Rolling API-call counter pill for the status line. Warns as it
+        // nears Torn's ~100/min ceiling.
+        _apiCounterHtml() {
+            const n = apiCallsLastMinute();
+            const cls = n >= RATE_WARN ? "bh-api-counter warn" : "bh-api-counter";
+            const title = n >= RATE_WARN
+                ? `${n} API calls in the last minute — near Torn's ~100/min limit. Raise the watchlist interval or watch fewer targets.`
+                : `${n} API calls in the last minute (across all open BH tabs). Torn allows ~100/min.`;
+            return `<span class="${cls}" id="bh-api-counter" title="${title}">API ${n}/min</span>`;
+        }
+
+        // Watchlist strip above the table: watched targets, their last-known
+        // state, projected call cost, and remove buttons. Hidden when empty.
+        _renderWatchStrip() {
+            const wl = this.hunter.watchlist;
+            const ids = Object.keys(wl);
+            if (ids.length === 0) return "";
+            const intervalSec = Math.max(1, Number(this.hunter.settings.watchlistIntervalSec) || 5);
+            const proj = projectedWatchCallsPerMin(ids.length, intervalSec);
+            const projCls = proj >= RATE_WARN ? "bh-wl-proj warn" : "bh-wl-proj";
+            const items = ids.map((id) => {
+                const e = wl[id];
+                const stateCls = e.lastState === "Okay" ? "bh-badge-ok"
+                    : e.lastState === "Hospital" ? "bh-badge-hosp" : "bh-badge-travel";
+                const name = escHtml(e.name || id);
+                return `<span class="bh-wl-item">
+                    <a class="bh-name-link" href="${PROFILE_URL}${id}" target="_blank" rel="noopener">${name}</a>
+                    <span class="bh-badge ${stateCls}">${escHtml(e.lastState || "?")}</span>
+                    <button class="bh-wl-remove" data-id="${id}" title="Stop watching">&times;</button>
+                </span>`;
+            }).join("");
+            return `
+                <div class="bh-watchlist">
+                    <div class="bh-wl-head">
+                        <span>👁 Watching ${ids.length} for med-out</span>
+                        <span class="${projCls}" title="Estimated requests/min this watchlist adds at the current interval (${intervalSec}s), accounting for the 750ms call gate.">~${proj}/min</span>
+                        <span class="bh-wl-hint">polls every ${intervalSec}s · visible tab only</span>
+                    </div>
+                    <div class="bh-wl-items">${items}</div>
+                </div>
+            `;
+        }
+
         _renderRow(b) {
             const sm = fmt.statusMeta(b);
             const statusClass = sm.cls;
@@ -2507,6 +2857,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <td class="bh-col-divider"><span class="bh-badge ${statusClass}"${hospAttr}>${statusText}</span>${locationBadge}</td>
                     <td class="bh-row-actions-cell">
                         <button class="bh-attack" data-id="${b.target_id}">Attack →</button>
+                        <button class="bh-row-watch${this.hunter.isWatched(b.target_id) ? " watching" : ""}" data-id="${b.target_id}" data-name="${escHtml(b.target_name)}" data-reward="${b.reward}" data-state="${b.statusState || ""}" title="${this.hunter.isWatched(b.target_id) ? "Stop watching for med-out" : "Watch for med-out (alert when out of hospital)"}">👁</button>
                         <button class="bh-row-blacklist" data-id="${b.target_id}" data-name="${escHtml(b.target_name)}" title="Blacklist ${escHtml(b.target_name)}">🚫</button>
                     </td>
                 </tr>
@@ -2851,6 +3202,21 @@ table.bh-table{width:100%;border-collapse:collapse}
                     </div>
                 </div>
 
+                <div class="bh-section">
+                    <h3>Watchlist (med-out alerts)</h3>
+                    <div class="bh-grid-2">
+                        <div class="bh-field">
+                            <label>Poll interval (seconds)</label>
+                            <input id="bh-set-watch-int" class="bh-input" type="number" min="1" max="600" step="1" value="${Math.max(1, Number(s.watchlistIntervalSec) || 5)}">
+                            <span class="bh-hint" id="bh-watch-proj-hint"></span>
+                        </div>
+                        <div class="bh-field">
+                            <label>How it works</label>
+                            <p class="bh-hint" style="margin-top:6px">Click 👁 on any Hunt row to watch that target. The <b>visible tab</b> polls each watched target's status and pops an alert the moment they leave hospital. A target is auto-removed only when its bounty is gone (claimed/expired). Minimum 1 s — but each target is one request, and Torn caps ~100/min, so watch few or widen the interval. The Hunt tab shows live calls/min.</p>
+                        </div>
+                    </div>
+                </div>
+
                 ${this._renderBlacklistSection()}
 
                 <div class="bh-section">
@@ -2873,6 +3239,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     minFF: cleanMin,
                     maxFF: cleanMax,
                     refreshSec: parseInt($("bh-set-refresh").value, 10),
+                    watchlistIntervalSec: Math.max(1, Math.min(600, parseInt($("bh-set-watch-int").value, 10) || 5)),
                     includeUnknownFF: $("bh-set-unkff").checked,
                     searchEnabled: $("bh-set-enabled").checked,
                     pauseOnLowEnergy: $("bh-set-pause-energy").checked,
@@ -2883,10 +3250,23 @@ table.bh-table{width:100%;border-collapse:collapse}
                 });
                 this._restartLoopFromSettings();
             };
-            ["bh-set-price", "bh-set-hosp", "bh-set-hosp-nolimit", "bh-set-samecountry", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-unkff",
+            ["bh-set-price", "bh-set-hosp", "bh-set-hosp-nolimit", "bh-set-samecountry", "bh-set-ffmin", "bh-set-ffmax", "bh-set-refresh", "bh-set-watch-int", "bh-set-unkff",
              "bh-set-enabled", "bh-set-pause-energy", "bh-set-min-energy",
              "bh-set-pause-hosp", "bh-set-pause-jail", "bh-set-pause-travel"]
                 .forEach((id) => $(id).addEventListener("change", persistScript));
+
+            // Live projection hint under the watchlist interval input.
+            const watchIntEl = $("bh-set-watch-int");
+            const projHint = $("bh-watch-proj-hint");
+            const updateProjHint = () => {
+                const iv = Math.max(1, Math.min(600, parseInt(watchIntEl.value, 10) || 5));
+                const k = this.hunter.watchlistCount();
+                if (k === 0) { projHint.textContent = "No targets watched yet. Click 👁 on a Hunt row."; return; }
+                const proj = projectedWatchCallsPerMin(k, iv);
+                projHint.textContent = `${k} watched → ~${proj} calls/min at ${iv}s${proj >= RATE_WARN ? " ⚠ near the ~100/min limit" : ""}.`;
+            };
+            updateProjHint();
+            watchIntEl.addEventListener("input", updateProjHint);
 
             // Grey out the numeric cap while "no hospital time limit" is on —
             // its value is ignored in that mode.
@@ -3399,7 +3779,17 @@ table.bh-table{width:100%;border-collapse:collapse}
                 } catch { /* ignore malformed writes */ }
             } else if (e.key === LS.blacklist) {
                 hunter.applyExternalBlacklist();
+            } else if (e.key === LS.watchlist) {
+                hunter.applyExternalWatchlist();
             }
+        });
+
+        // The visible tab owns watchlist polling. On focus, take over the
+        // duty (and adopt anything a sibling added while we were hidden); on
+        // blur the running tick self-suspends its requests. Kicking a tick on
+        // focus makes the handoff feel instant.
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") hunter.kickWatchIfVisible();
         });
 
         const W = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
@@ -3414,7 +3804,11 @@ table.bh-table{width:100%;border-collapse:collapse}
         });
         W.mountEugeneFooterMenu();
 
-        if (initialKey) hunter.start();
+        if (initialKey) {
+            hunter.start();
+            // Resume watching any targets carried over from a previous session.
+            hunter.ensureWatchLoop();
+        }
     }
 
     if (document.readyState === "loading") {
