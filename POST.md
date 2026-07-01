@@ -10,9 +10,11 @@ Uploaded screenshots in use:
 |---|---|
 | `https://editor.torn.com/7ab284e6-0699-4017-805a-74d60dc076ef-4192025.png` | Hunt tab with matches |
 | `https://editor.torn.com/6c774166-ebf4-4797-8c1e-d1493e5a4d34-4192025.png` | Corner toast on a new match |
+| `https://editor.torn.com/1d91c657-dbcb-4338-899c-cf6f24e2e003-4192025.png` | Filters tab |
+| `https://editor.torn.com/a0c93c52-bccd-4d62-8725-26e57c22208f-4192025.png` | Alerts tab |
+| `https://editor.torn.com/f5672027-2b87-4a6e-8484-ea82bce63eb7-4192025.png` | Blacklist tab |
+| `https://editor.torn.com/d05da8c6-f6c1-4f30-a975-55484d5761ea-4192025.png` | Key tab |
 | `https://editor.torn.com/cdbeb15b-7280-4a13-83f9-332633cf2b91-4192025.png` | Torn footer with the 🎯 button |
-
-(Settings-tab screenshot intentionally omitted — the tab is being reworked; add one once it's cleaned up.)
 
 ---
 
@@ -97,7 +99,7 @@ Uploaded screenshots in use:
   <strong>Refresh now</strong> or let it auto-poll.
 </p>
 <p>
-  <a class="full" href="https://editor.torn.com/7ab284e6-0699-4017-805a-74d60dc076ef-4192025.png" rel="page_thread"
+  <a href="https://editor.torn.com/7ab284e6-0699-4017-805a-74d60dc076ef-4192025.png" target="_blank" rel="noopener"
     ><img
       src="https://editor.torn.com/7ab284e6-0699-4017-805a-74d60dc076ef-4192025.png"
       alt="7ab284e6-0699-4017-805a-74d60dc076ef-4192025.png"
@@ -114,12 +116,12 @@ Uploaded screenshots in use:
   3 at once on desktop; extras roll into a <strong>+N more</strong> card. Configurable position, size, and count.
 </p>
 <p>
-  <a class="full" href="https://editor.torn.com/6c774166-ebf4-4797-8c1e-d1493e5a4d34-4192025.png" rel="page_thread"
+  <a href="https://editor.torn.com/6c774166-ebf4-4797-8c1e-d1493e5a4d34-4192025.png" target="_blank" rel="noopener"
     ><img
       src="https://editor.torn.com/6c774166-ebf4-4797-8c1e-d1493e5a4d34-4192025.png"
       alt="6c774166-ebf4-4797-8c1e-d1493e5a4d34-4192025.png"
-      width="224"
-      height="414"
+      width="200"
+      height="370"
   /></a>
 </p>
 <p>&nbsp;</p>
@@ -138,14 +140,50 @@ Uploaded screenshots in use:
   <span style="font-size: 16px;"><strong>⚙️ Settings</strong></span>
 </p>
 <ul style="font-size: 14px;">
-  <li><strong>Hunt</strong> — the ▶ Running / ⏸ Paused switch (pauses the whole script), refresh, and API counter</li>
-  <li><strong>Filters</strong> — min reward, FF range, hospital window, reachability (same-country / unknown-FF)</li>
-  <li><strong>Alerts</strong> — refresh + watchlist intervals, toast appearance, and an Advanced block for the energy / hospital / jail / travel pauses</li>
-  <li><strong>Blacklist</strong> — exclude players (browser-local, copy/paste between devices)</li>
-  <li><strong>Key</strong> — Torn + FFScouter keys, debug log</li>
+  <li>
+    <strong>Hunt</strong> &mdash; the ▶ Running / ⏸ Paused switch (pauses the whole script), refresh, and API counter
+  </li>
+  <li>
+    <strong>Filters</strong> &mdash; min reward, FF range, hospital window, reachability (same-country / unknown-FF)
+  </li>
+  <li>
+    <strong>Alerts</strong> &mdash; refresh + watchlist intervals, toast appearance, and an Advanced block for the
+    energy / hospital / jail / travel pauses
+  </li>
+  <li><strong>Blacklist</strong> &mdash; exclude players (browser-local, copy/paste between devices)</li>
+  <li><strong>Key</strong> &mdash; Torn + FFScouter keys, debug log</li>
 </ul>
-<p style="font-size: 14px;">
-  Settings were just reworked into these tabs — proper screenshots coming soon.
+<p>
+  <a class="full" href="https://editor.torn.com/1d91c657-dbcb-4338-899c-cf6f24e2e003-4192025.png" rel="page_thread"
+    ><img
+      src="https://editor.torn.com/1d91c657-dbcb-4338-899c-cf6f24e2e003-4192025.png"
+      alt="1d91c657-dbcb-4338-899c-cf6f24e2e003-4192025.png"
+      width="453"
+      height="251" /></a
+  ><a class="full" href="https://editor.torn.com/a0c93c52-bccd-4d62-8725-26e57c22208f-4192025.png" rel="page_thread"
+    ><img
+      style="background-color: rgba(0, 0, 0, 0); font-family: Arial; font-size: 12px; font-style: normal; font-weight: 400;"
+      src="https://editor.torn.com/a0c93c52-bccd-4d62-8725-26e57c22208f-4192025.png"
+      alt="a0c93c52-bccd-4d62-8725-26e57c22208f-4192025.png"
+      width="457"
+      height="478" /></a
+  ><a class="full" href="https://editor.torn.com/f5672027-2b87-4a6e-8484-ea82bce63eb7-4192025.png" rel="page_thread"
+    ><img
+      style="background-color: rgba(0, 0, 0, 0);"
+      src="https://editor.torn.com/f5672027-2b87-4a6e-8484-ea82bce63eb7-4192025.png"
+      alt="f5672027-2b87-4a6e-8484-ea82bce63eb7-4192025.png"
+      width="453"
+      height="180"
+  /></a>
+</p>
+<p>
+  <a class="full" href="https://editor.torn.com/d05da8c6-f6c1-4f30-a975-55484d5761ea-4192025.png" rel="page_thread"
+    ><img
+      src="https://editor.torn.com/d05da8c6-f6c1-4f30-a975-55484d5761ea-4192025.png"
+      alt="d05da8c6-f6c1-4f30-a975-55484d5761ea-4192025.png"
+      width="452"
+      height="395"
+  /></a>
 </p>
 <p>&nbsp;</p>
 <hr />
