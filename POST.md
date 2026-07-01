@@ -138,9 +138,11 @@ Uploaded screenshots in use:
   <li>Blacklist players (browser-local, copy/paste between devices)</li>
 </ul>
 <p>
-  <em
-    >Full disclosure: the Settings tab is a bit of a mess right now &mdash; not pretty enough for a screenshot yet. A
-    cleanup (and a proper screenshot) is coming soon.</em
+  <span style="font-size: 14px;"
+    ><em
+      >Full disclosure: the Settings tab is a bit of a mess right now &mdash; not pretty enough for a screenshot yet. A
+      cleanup (and a proper screenshot) is coming soon.</em
+    ></span
   >
 </p>
 <p>&nbsp;</p>
