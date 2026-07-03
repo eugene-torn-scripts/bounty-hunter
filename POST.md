@@ -38,6 +38,14 @@ Uploaded screenshots in use:
 </p>
 <ul style="font-size: 14px;">
   <li>
+    <strong>2026-07-03</strong> &mdash; <strong>Concurrency &amp; robustness</strong>: overlapping refreshes (auto-tick +
+    manual <strong>Refresh now</strong> + cross-tab sync) and watchlist polls now share a single in-flight run instead of
+    firing on top of each other &mdash; fewer wasted API calls, no rate-limit blips right after a manual refresh, and no
+    stale cycle landing over a fresher one.
+    <em>Thanks to <a href="/profiles.php?XID=3926289" target="_blank" rel="noopener">Rowage [3926289]</a> for the
+      contribution.</em>
+  </li>
+  <li>
     <strong>2026-07-01</strong> &mdash; <strong>Settings rework</strong>: the on/off switch now sits right on the
     <strong>Hunt</strong> tab (▶ Running / ⏸ Paused), and the rest is regrouped into clearer tabs &mdash;
     <strong>Filters</strong>, <strong>Alerts</strong>, <strong>Blacklist</strong>, and <strong>Key</strong>. Less
