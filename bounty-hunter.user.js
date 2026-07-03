@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.17.0
+// @version      1.17.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.17.0";
+    const VERSION = "1.17.1";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -680,7 +680,7 @@
             return data;
         }
 
-        async fetchAllBounties() {
+        async fetchAllBounties(minReward = 0) {
             const all = [];
             let url = `${API_BASE}/torn/bounties?limit=100&offset=0`;
             let delay = 0;
@@ -689,6 +689,13 @@
                 const data = await this._get(url);
                 if (Array.isArray(data.bounties)) all.push(...data.bounties);
                 if (typeof data.bounties_delay === "number") delay = data.bounties_delay;
+                // The board is strictly reward-descending, so once the cheapest
+                // row on this page is below our price floor, no later page can
+                // hold a qualifying bounty — stop instead of paging the tail.
+                // This collapses ~10 board calls/cycle down to ~1 at typical
+                // minPrice settings.
+                const last = data.bounties && data.bounties[data.bounties.length - 1];
+                if (last && last.reward < minReward) break;
                 const next = data._metadata && data._metadata.links && data._metadata.links.next;
                 if (!next || !data.bounties || data.bounties.length === 0) break;
                 url = next;
@@ -1584,7 +1591,7 @@
             }
             this.pausedReason = null;
 
-            const { bounties, delaySec } = await this.api.fetchAllBounties();
+            const { bounties, delaySec } = await this.api.fetchAllBounties(this.settings.minPrice);
             logDebug(`fetched ${bounties.length} bounties (cache delay ${delaySec || 0}s)`, "ok");
 
             // Collapse multiple bounty rows on the same target + same reward
