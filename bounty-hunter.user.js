@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.17.1
+// @version      1.18.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.17.1";
+    const VERSION = "1.18.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -1788,12 +1788,12 @@
                 const c = this._statusCache.get(id);
                 if (c) {
                     const d = c.data;
-                    // Hospital with a future `until` is effectively locked in —
-                    // the target can't leave hospital unless revived (rare).
-                    // Trust the cache until the timestamp passes.
-                    const hospLocked = d && d.status && d.status.state === "Hospital"
-                        && d.status.until && (d.status.until * 1000) > now;
-                    if (hospLocked || (now - c.fetchedAt < STATUS_CACHE_MS)) {
+                    // Only the short freshness dedupe — never trust a cached
+                    // Hospital entry for its full `until`. A target can med out
+                    // or be revived early, flipping to Okay; trusting `until`
+                    // would keep them cached as Hospital for hours and we'd
+                    // miss the med-out (never re-fetch → never fire the card).
+                    if (now - c.fetchedAt < STATUS_CACHE_MS) {
                         out.set(id, d);
                         continue;
                     }
