@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.18.0
+// @version      1.18.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.18.0";
+    const VERSION = "1.18.1";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -961,6 +961,7 @@
             this._watchTimer = null;
             this._watchNextAt = 0;
             this._watchRunning = false;
+            this._watchTicking = false; // guards against overlapping _watchTick runs (timer + focus-kick)
             this.onWatchToast = null;   // ui/toaster sets this — med-out alert
             this.onWatchPoll = null;    // ui sets this — (busy:bool) watchlist activity bar
             this.myUserId = null;
@@ -983,6 +984,7 @@
             this._statusCache = new Map(); // id → { data, fetchedAt }
             this._timer = null;
             this._running = false;
+            this._refreshing = null;    // in-flight refresh() promise; shared so concurrent triggers don't double-fetch
             this._nextAt = 0;
             this.lastError = null;
             this.partialFromRateLimit = false; // true when lastMatches comes from a cycle aborted mid-scan by rate limit
@@ -1174,6 +1176,11 @@
                 this._scheduleWatch(interval);
                 return;
             }
+            // A poll is already in flight (e.g. focus-kick fired while the timer
+            // tick was mid-loop) — skip this run. The active poll reschedules
+            // itself at the end, so the loop stays alive.
+            if (this._watchTicking) return;
+            this._watchTicking = true;
             let changed = false;
             const ids = Object.keys(this.watchlist);
             if (this.onWatchPoll) this.onWatchPoll(true);
@@ -1210,6 +1217,7 @@
             }
             } finally {
                 if (this.onWatchPoll) this.onWatchPoll(false);
+                this._watchTicking = false;
             }
             if (changed) {
                 saveWatchlist(this.watchlist);
@@ -1540,7 +1548,18 @@
             }
         }
 
-        async refresh() {
+        // Reentrancy guard. Auto-tick, the "Refresh now" button, and cross-tab
+        // settings sync can all fire a refresh at once; without this they'd run
+        // overlapping pipelines — double the API calls (risking a rate-limit
+        // block) and an older cycle landing last, overwriting fresher matches.
+        // Concurrent callers share the one in-flight promise instead.
+        refresh() {
+            if (this._refreshing) return this._refreshing;
+            this._refreshing = this._refreshImpl().finally(() => { this._refreshing = null; });
+            return this._refreshing;
+        }
+
+        async _refreshImpl() {
             this.lastError = null;
             const refreshStart = performance.now();
             logDebug(`refresh: start`, "info");
