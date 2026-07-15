@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.18.1
+// @version      1.19.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.18.1";
+    const VERSION = "1.19.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -682,11 +682,19 @@
 
         async fetchAllBounties(minReward = 0) {
             const all = [];
-            let url = `${API_BASE}/torn/bounties?limit=100&offset=0`;
+            // Torn serves the bounty board from an outer cache on top of the
+            // real 30s snapshot; passing a `timestamp` bypasses that outer
+            // layer so each new snapshot surfaces ~20s sooner. It does NOT
+            // beat the 30s `bounties_delay` floor. One timestamp for the whole
+            // pagination loop keeps every page on the same snapshot.
+            const ts = Math.floor(Date.now() / 1000);
+            let url = `${API_BASE}/torn/bounties?limit=100&offset=0&timestamp=${ts}`;
             let delay = 0;
             let safety = 10; // cap pagination at 1000 bounties
             while (url && safety-- > 0) {
-                const data = await this._get(url);
+                const pageUrl = new URL(url);
+                pageUrl.searchParams.set("timestamp", ts);
+                const data = await this._get(pageUrl.toString());
                 if (Array.isArray(data.bounties)) all.push(...data.bounties);
                 if (typeof data.bounties_delay === "number") delay = data.bounties_delay;
                 // The board is strictly reward-descending, so once the cheapest
