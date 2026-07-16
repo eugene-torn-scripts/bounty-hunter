@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.19.0
+// @version      1.20.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.19.0";
+    const VERSION = "1.20.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -154,6 +154,15 @@
         watchlistIntervalSec: 5,
         toastsEnabled: true,
         includeUnknownFF: false,
+        // Ranked-war indicator. When on, targets whose faction is in an active
+        // ranked war get a ⚔ badge in the Hunt list and toast — a heads-up that
+        // only the war opponent can hit them for 60s right after they leave
+        // hospital/jail (Torn's "outside hitter" protection). Costs one EXTRA
+        // API call per unique faction (a separate /faction/{id}/rankedwars
+        // request), cached for `warStatusCacheMin` minutes. Off by default so
+        // Public-key users don't silently spend more of their call budget.
+        warStatus: false,
+        warStatusCacheMin: 15,
         // Master kill-switch for the refresh loop. When off, auto-refresh
         // and cross-tab free-ride are both skipped; last-known matches stay
         // on screen and manual "Refresh now" still works.
@@ -728,6 +737,19 @@
             };
         }
 
+        // True when the faction is in an active ranked war RIGHT NOW. The
+        // endpoint returns the faction's war history newest-first; the latest
+        // entry is upcoming (start in the future), ongoing (started, not yet
+        // ended — `end` stays 0/null and `winner` null until it finishes), or
+        // finished (end > 0). Only "ongoing" counts. Public-scope, so it works
+        // with any key. One request per call — cache at the WarStatusCache layer.
+        async fetchFactionAtWar(id) {
+            const data = await this._get(`/faction/${Number(id)}/rankedwars`);
+            const ws = Array.isArray(data.rankedwars) ? data.rankedwars : [];
+            const now = Math.floor(Date.now() / 1000);
+            return ws.some((w) => Number(w.start) <= now && !w.end && w.winner == null);
+        }
+
         async validateKey() {
             // /user/profile gives us id + level + age + faction_id in one shot;
             // age is needed to evaluate Torn's NPP rule against bounty targets.
@@ -741,6 +763,49 @@
         async fetchBars() {
             const data = await this._get("/user/bars");
             return (data && data.bars) || null;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  RANKED-WAR STATUS CACHE (per-faction, TTL-bounded)
+    // ════════════════════════════════════════════════════════════
+    //
+    // War state changes on the scale of hours, so one lookup per faction is
+    // cached for the user-configured TTL (default 15 min). Only fires for
+    // factions we actually evaluate, and only when the war-status setting is
+    // on — most bounty targets never trigger a call. On a lookup error we fall
+    // back to any stale cached value, else "not at war" (fail open — never
+    // block or badge on a network blip).
+    class WarStatusCache {
+        constructor(api, ttlMsGetter) {
+            this.api = api;
+            this._ttlMs = ttlMsGetter;
+            this._cache = new Map(); // factionId -> { atWar, fetchedAt }
+        }
+
+        _fresh(e) { return e && (Date.now() - e.fetchedAt) < this._ttlMs(); }
+
+        async resolve(factionId) {
+            const id = Number(factionId);
+            if (!id) return false;
+            const c = this._cache.get(id);
+            if (this._fresh(c)) return c.atWar;
+            try {
+                const atWar = await this.api.fetchFactionAtWar(id);
+                this._cache.set(id, { atWar, fetchedAt: Date.now() });
+                return atWar;
+            } catch {
+                return c ? c.atWar : false;
+            }
+        }
+
+        // Resolve a batch, reusing the cache. Calls serialize through the API
+        // client's 750ms gate anyway, so a simple sequential loop is both
+        // correct and no slower than firing them in parallel.
+        async resolveMany(ids) {
+            const out = new Map();
+            for (const id of ids) out.set(Number(id), await this.resolve(id));
+            return out;
         }
     }
 
@@ -964,6 +1029,8 @@
         constructor(api) {
             this.api = api;
             this.settings = loadSettings();
+            this.warStatus = new WarStatusCache(api, () =>
+                Math.max(1, Number(this.settings.warStatusCacheMin) || 15) * 60_000);
             this.blacklist = loadBlacklist();
             this.watchlist = loadWatchlist();
             this._watchTimer = null;
@@ -1213,7 +1280,7 @@
                     if (state) {
                         const prev = entry.lastState;
                         if (prev && prev !== "Okay" && state === "Okay") {
-                            this._fireMedOut(id, entry, profile);
+                            await this._fireMedOut(id, entry, profile);
                         }
                         if (state !== prev) { entry.lastState = state; changed = true; }
                     }
@@ -1235,8 +1302,14 @@
             this._scheduleWatch(interval);
         }
 
-        _fireMedOut(id, entry, profile) {
+        async _fireMedOut(id, entry, profile) {
             if (!this.onWatchToast) return;
+            // Med-out is exactly when the 60s outside-hitter protection starts
+            // if the target's faction is at war — so flag it on this toast.
+            let warActive = false;
+            if (this.settings.warStatus && profile && profile.faction_id) {
+                warActive = await this.warStatus.resolve(profile.faction_id);
+            }
             this.onWatchToast([{
                 target_id: Number(id),
                 target_name: entry.name || (profile && profile.name) || String(id),
@@ -1250,6 +1323,7 @@
                 awayFromMe: false,
                 location: null,
                 medOut: true,
+                warActive,
             }]);
             logDebug(`watchlist: ${entry.name || id} is OUT of hospital — alert fired`, "ok");
         }
@@ -1750,7 +1824,7 @@
                 }
                 // Online/idle/offline — from the same profile snapshot, so it
                 // rides through to the row (and the shared payload) for free.
-                row = { ...row, lastAction: p.lastAction || null };
+                row = { ...row, lastAction: p.lastAction || null, factionId: p.faction_id || null };
                 // Location marker — set when the target is somewhere you can't
                 // attack from right now. "In transit" for mid-flight targets
                 // (country unknown), otherwise their country name.
@@ -1796,6 +1870,16 @@
             // 4b) Diff for toasts + render + cross-tab broadcast.
             this.partialFromRateLimit = false;
             this.lastCounts = counts;
+            // Ranked-war badge — opt-in, one cached lookup per unique faction.
+            // Runs only on the clean path (never during a rate-limited partial
+            // cycle, so we don't spend more budget when already throttled).
+            if (this.settings.warStatus && matches.length) {
+                const facIds = [...new Set(matches.map((m) => m.factionId).filter(Boolean))];
+                const warMap = await this.warStatus.resolveMany(facIds);
+                for (const m of matches) {
+                    m.warActive = !!(m.factionId && warMap.get(Number(m.factionId)));
+                }
+            }
             this._applyMatches(matches);
             this._writeShared();
             logDebug(`refresh: done — ${matches.length} matches (of ${counts.total} bounties)${counts.staleReward ? `, dropped ${counts.staleReward} stale reward row${counts.staleReward === 1 ? "" : "s"} (claimed/expired per target's own bounty list)` : ""}`, "ok", performance.now() - refreshStart);
@@ -2022,8 +2106,13 @@
             const locationChip = (showLocation && b.awayFromMe && b.location)
                 ? `<span class="bh-chip bh-badge-travel">📍 ${escHtml(b.location)}</span>`
                 : "";
-            const metaRow = (ffChip || bsChip || statusChip || locationChip)
-                ? `<div class="bh-toast-meta">${ffChip}${bsChip}${statusChip}${locationChip}</div>`
+            // War chip rides the same gate as the badge (warActive is only set
+            // when the setting is on), so no separate notification-field toggle.
+            const warChip = b.warActive
+                ? `<span class="bh-chip bh-badge-war" title="Faction in an active ranked war — only the war opponent can hit for 60s after hospital/jail.">⚔ War</span>`
+                : "";
+            const metaRow = (ffChip || bsChip || statusChip || warChip || locationChip)
+                ? `<div class="bh-toast-meta">${ffChip}${bsChip}${statusChip}${warChip}${locationChip}</div>`
                 : "";
             const actionsRow = showBlacklist
                 ? `<div class="bh-toast-actions">
@@ -2320,6 +2409,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-badge-ok{background:#1e3a2a;color:#4caf50}
 .bh-badge-hosp{background:#3a2a1e;color:#ffb74d}
 .bh-badge-travel{background:#1e2a3a;color:#64b5f6}
+.bh-badge-war{background:#3a1e1e;color:#ff7043}
 .bh-count{display:inline-block;padding:1px 6px;margin-left:6px;background:#3a2a4a;color:#c49cff;border-radius:8px;font-size:10px;font-weight:700;vertical-align:middle}
 .bh-empty{text-align:center;color:#888;padding:30px 8px;font-size:14px}
 .bh-empty button{margin-top:10px}
@@ -2388,6 +2478,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-chip.bh-badge-ok{background:#1e3a2a;color:#4caf50;border-color:#1e3a2a}
 .bh-chip.bh-badge-hosp{background:#3a2a1e;color:#ffb74d;border-color:#3a2a1e}
 .bh-chip.bh-badge-travel{background:#1e2a3a;color:#64b5f6;border-color:#1e2a3a}
+.bh-chip.bh-badge-war{background:#3a1e1e;color:#ff7043;border-color:#3a1e1e}
 .bh-toast-attack{width:100%;padding:6px 10px;background:#ef5350;color:#fff;border:none;border-radius:4px;
   cursor:pointer;font-weight:600;font-size:12px}
 .bh-toast-attack:hover{background:#f44336}
@@ -3033,6 +3124,9 @@ table.bh-table{width:100%;border-collapse:collapse}
             const locationBadge = (b.awayFromMe && b.location)
                 ? ` <span class="bh-badge bh-badge-travel">📍 ${escHtml(b.location)}</span>`
                 : "";
+            const warBadge = b.warActive
+                ? ` <span class="bh-badge bh-badge-war" title="This faction is in an active ranked war — only the war opponent can hit them for 60s after they leave hospital/jail.">⚔ War</span>`
+                : "";
             const ffCell = b.ff == null ? "—" : b.ff.toFixed(2);
             const countBadge = b.bountyCount > 1
                 ? ` <span class="bh-count">×${b.bountyCount}</span>`
@@ -3046,7 +3140,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     <td class="num">${escHtml(fmt.moneyFull(b.reward))}</td>
                     <td class="num">${ffCell}</td>
                     <td class="num bh-col-divider">${escHtml(b.bs || "—")}</td>
-                    <td class="bh-col-divider"><span class="bh-badge ${statusClass}"${hospAttr}>${statusText}</span>${locationBadge}</td>
+                    <td class="bh-col-divider"><span class="bh-badge ${statusClass}"${hospAttr}>${statusText}</span>${warBadge}${locationBadge}</td>
                     <td class="bh-row-actions-cell">
                         <button class="bh-attack" data-id="${b.target_id}">Attack →</button>
                         <button class="bh-row-watch${this.hunter.isWatched(b.target_id) ? " watching" : ""}" data-id="${b.target_id}" data-name="${escHtml(b.target_name)}" data-reward="${b.reward}" data-state="${b.statusState || ""}" title="${this.hunter.isWatched(b.target_id) ? "Stop watching for med-out" : "Watch for med-out (alert when out of hospital)"}">👁</button>
@@ -3356,6 +3450,16 @@ table.bh-table{width:100%;border-collapse:collapse}
                 </div>
 
                 <div class="bh-section">
+                    <h3>War status</h3>
+                    <label class="bh-check"><input type="checkbox" id="bh-set-war"${s.warStatus ? " checked" : ""}> Show ranked-war indicator (⚔ War)</label>
+                    <div class="bh-field" style="max-width:200px;margin-top:6px">
+                        <label>Cache (minutes)</label>
+                        <input id="bh-set-war-cache" class="bh-input" type="number" min="1" max="1440" step="1" value="${Math.max(1, Number(s.warStatusCacheMin) || 15)}"${s.warStatus ? "" : " disabled"}>
+                    </div>
+                    <span class="bh-hint">Flags targets whose faction is in an active ranked war — only the war opponent can hit them for 60s right after they leave hospital/jail. <b>Adds one API call per unique faction</b> (a separate request), cached for the minutes above. Off by default.</span>
+                </div>
+
+                <div class="bh-section">
                     <button id="bh-reset" class="bh-btn bh-btn-muted">Reset filters to defaults</button>
                 </div>
             `;
@@ -3374,17 +3478,24 @@ table.bh-table{width:100%;border-collapse:collapse}
                     minFF: cleanMin,
                     maxFF: cleanMax,
                     includeUnknownFF: $("bh-set-unkff").checked,
+                    warStatus: $("bh-set-war").checked,
+                    warStatusCacheMin: Math.max(1, Math.min(1440, parseInt($("bh-set-war-cache").value, 10) || 15)),
                 });
                 this._restartLoopFromSettings();
             };
             ["bh-set-price", "bh-set-hosp", "bh-set-hosp-nolimit", "bh-set-samecountry",
-             "bh-set-ffmin", "bh-set-ffmax", "bh-set-unkff"]
+             "bh-set-ffmin", "bh-set-ffmax", "bh-set-unkff", "bh-set-war", "bh-set-war-cache"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
             // Grey out the numeric cap while "no hospital time limit" is on —
             // its value is ignored in that mode.
             $("bh-set-hosp-nolimit").addEventListener("change", (e) => {
                 $("bh-set-hosp").disabled = e.target.checked;
+            });
+
+            // Grey out the cache field while the war indicator is off.
+            $("bh-set-war").addEventListener("change", (e) => {
+                $("bh-set-war-cache").disabled = !e.target.checked;
             });
 
             $("bh-reset").addEventListener("click", () => {

@@ -38,6 +38,14 @@ Uploaded screenshots in use:
 </p>
 <ul style="font-size: 14px;">
   <li>
+    <strong>2026-07-16</strong> &mdash; <strong>Ranked-war indicator</strong>: optional <strong>⚔ War</strong> badge on
+    the Hunt list and toasts for targets whose faction is in an active ranked war &mdash; a heads-up that only the war
+    opponent can hit them for <strong>60s</strong> right after they leave hospital/jail. <strong>Off by default</strong>,
+    and it adds <strong>one API call per unique faction</strong> (a separate request), cached for a configurable window
+    (default 15&nbsp;min). Turn it on in <strong>Filters &rarr; War status</strong>.
+    <em>Idea from <a href="/profiles.php?XID=3908280" target="_blank" rel="noopener">shaul [3908280]</a>.</em>
+  </li>
+  <li>
     <strong>2026-07-03</strong> &mdash; <strong>Concurrency &amp; robustness</strong>: overlapping refreshes (auto-tick +
     manual <strong>Refresh now</strong> + cross-tab sync) and watchlist polls now share a single in-flight run instead of
     firing on top of each other &mdash; fewer wasted API calls, no rate-limit blips right after a manual refresh, and no
@@ -152,7 +160,8 @@ Uploaded screenshots in use:
     <strong>Hunt</strong> &mdash; the ▶ Running / ⏸ Paused switch (pauses the whole script), refresh, and API counter
   </li>
   <li>
-    <strong>Filters</strong> &mdash; min reward, FF range, hospital window, reachability (same-country / unknown-FF)
+    <strong>Filters</strong> &mdash; min reward, FF range, hospital window, reachability (same-country / unknown-FF),
+    and the optional ranked-war (⚔) indicator
   </li>
   <li>
     <strong>Alerts</strong> &mdash; refresh + watchlist intervals, toast appearance, and an Advanced block for the
