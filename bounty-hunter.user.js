@@ -61,41 +61,28 @@
         watchlist: "bh_watchlist",   // { "<id>": { name, reward, lastState, addedAt } } — med-out watch targets
         apiCallPrefix: "bh_apiCalls_", // per-tab ring of recent API-call timestamps; summed cross-tab for the rate counter
     };
-    // Every open BH tab records its own API-call timestamps under a distinct
-    // key so the rolling rate counter can sum across tabs without a
-    // read-modify-write race on one shared array. The id is per page load.
+    // Per-tab key so the rolling counter sums across tabs without a read-modify-write race.
     const TAB_ID = Math.random().toString(36).slice(2, 10);
-    // Cloudflare Worker that powers the donor "thank-you" banner. Read-only,
-    // takes only the requester's Torn user id (no API key, no PII), returns
-    // { donor, lastDonationTs }. Cached for 6h in localStorage and shared
-    // across all torn.com tabs (one origin → one localStorage), so a typical
-    // user hits this at most ~4 times/day.
+    // Donor "thank-you" banner worker. Read-only, takes only the Torn user id, returns { donor, lastDonationTs }.
     const DONOR_API_BASE = "https://eugene-torn-donors.sytnik-evhen.workers.dev";
-    // When shared data is younger than (refreshSec * SHARED_FRESH_RATIO) ms,
-    // a tab skips its own refresh and free-rides on the writer's result.
-    // 0.8 leaves headroom for clock drift between tabs that started close
-    // together — we'd rather free-ride than double-fetch.
+    // Free-ride on another tab's result while it's within 0.8× the refresh window (clock-drift headroom).
     const SHARED_FRESH_RATIO = 0.8;
     const SPA_LS_APIKEY = "spa_apiKey"; // reuse SPA's key on desktop if present
 
     // ════════════════════════════════════════════════════════════
     //  DEBUG LOG — opt-in ring buffer surfaced in the Settings tab.
-    //  Goal: let the user SEE requests firing and rate-limit hits
-    //  in real time without opening devtools.
     // ════════════════════════════════════════════════════════════
 
     const debugLog = [];
     const MAX_DEBUG_LOG = 150;
-    // Cheap pub-sub so the Settings tab can re-render the log as new
-    // entries land. document is always present before the IIFE runs.
+    // Pub-sub so the Settings tab re-renders the log as entries land.
     const debugBus = document.createElement("div");
 
     function isDebugOn() {
         try { return localStorage.getItem(LS.debug) === "1"; } catch { return false; }
     }
 
-    // Strip host noise and redact the `key=` query param so Torn/FFScouter
-    // API keys never end up in a log the user might screenshot or paste.
+    // Redact key= so API keys never land in a log the user might screenshot or paste.
     function redactUrl(url) {
         try {
             const u = new URL(url);
@@ -126,9 +113,7 @@
     const API_BASE = "https://api.torn.com/v2";
     const FF_BASE  = "https://ffscouter.com/api/v1";
     const API_DELAY_MS = 750;
-    // Direct attack URL — lands on the fight page for the target. Torn
-    // auto-credits the bounty when the target is hospitalised, so we don't
-    // need `&bounty=<contract_id>` (which isn't in the public API anyway).
+    // Torn auto-credits the bounty on hospitalisation, so no &bounty param is needed.
     const ATTACK_URL  = "https://www.torn.com/page.php?sid=attack&user2ID=";
     const PROFILE_URL = "https://www.torn.com/profiles.php?XID=";
 
@@ -147,91 +132,52 @@
         // not attackable until you're co-located, shown for planning/awareness.
         sameCountryOnly: true,
         refreshSec: 60,
-        // Med-out watchlist poll interval, seconds. Floor 1. Each watched
-        // target costs one request per poll; with the 750 ms global gate the
-        // real cadence for K targets is ~max(interval, K*0.75s). The Hunt-tab
-        // counter warns when total calls approach Torn's ~100/min ceiling.
+        // Poll interval (s) per watched target; 1 request each. Counter warns near ~100/min.
         watchlistIntervalSec: 5,
         toastsEnabled: true,
         includeUnknownFF: false,
-        // Ranked-war indicator. When on, targets whose faction is in an active
-        // ranked war get a ⚔ badge in the Hunt list and toast — a heads-up that
-        // only the war opponent can hit them for 60s right after they leave
-        // hospital/jail (Torn's "outside hitter" protection). Costs one EXTRA
-        // API call per unique faction (a separate /faction/{id}/rankedwars
-        // request), cached for `warStatusCacheMin` minutes. Off by default so
-        // Public-key users don't silently spend more of their call budget.
+        // ⚔ badge for targets in an active ranked war. Adds one cached API call per faction. Off by default.
         warStatus: false,
         warStatusCacheMin: 15,
-        // Master kill-switch for the refresh loop. When off, auto-refresh
-        // and cross-tab free-ride are both skipped; last-known matches stay
-        // on screen and manual "Refresh now" still works.
+        // Master kill-switch: off disables auto-refresh + free-ride; manual refresh still works.
         searchEnabled: true,
-        // Skip auto-refresh when the player can't attack anyway. Requires a
-        // Torn API key with Minimal access or higher (`/user/bars`). Opt-in
-        // so existing Public-key users aren't forced to regenerate.
+        // Skip refresh when energy too low to attack. Needs a Minimal+ key (/user/bars).
         pauseOnLowEnergy: false,
-        // Standard attack costs 25 energy; raise if you want to keep a buffer
-        // for chains/merits. 0 is treated the same as pauseOnLowEnergy=false.
-        minEnergy: 25,
-        // Pause auto-refresh when WE can't act on a bounty anyway. All opt-in
-        // (off by default) and free: the player's own status comes from the
-        // /user/profile call refresh() already makes, so no extra API cost and
-        // no key-scope bump (status is Public). State→toggle mapping:
-        //   pauseInHospital   → status.state === "Hospital"
-        //   pauseInJail       → status.state === "Jail"
-        //   pauseWhileTraveling → status.state === "Traveling" (in transit;
-        //                         "Abroad"/landed is still attackable, so not gated)
+        minEnergy: 25, // standard attack = 25 energy; 0 == disabled
+        // Pause refresh on our own status. Free (from the profile call). "Abroad"/landed stays attackable, so not gated.
         pauseInHospital: false,
         pauseInJail: false,
         pauseWhileTraveling: false,
-        // Toast notification appearance. Persisted as a nested object so
-        // users who haven't touched these keep the original defaults forever.
-        notifications: {
+        notifications: { // nested so untouched users keep defaults
             position: "bottom-right", // bottom-right | bottom-left | top-right | top-left
-            width: 300,               // card width in px (desktop only — mobile is full-width)
-            maxVisible: 3,            // stack cap before "+N more" rolls up the overflow
-            timeoutSec: 15,           // per-card auto-dismiss
-            fields: {                 // which row to render inside each card
+            width: 300,               // desktop only — mobile is full-width
+            maxVisible: 3,            // stack cap before "+N more"
+            timeoutSec: 15,
+            fields: {
                 level: true,
                 reward: true,
                 ff: true,
                 bs: true,
                 status: true,
-                location: true,       // "📍 <country>" marker when the target is in a different country than you
-                blacklist: false,     // small "🚫 Blacklist" button next to Attack
+                location: true,       // 📍 marker when target is in a different country
+                blacklist: false,
             },
         },
     };
 
-    // Torn New Player Protection (https://wiki.torn.com/wiki/New_Player_Protection):
-    //   - NPP lasts 14 days (age 0..13). At age >= 14 the player loses NPP.
-    //   - A non-NPP player cannot attack an NPP player.
-    //   - An NPP player CAN attack another NPP player, but not in the target's first 24 h.
-    //   - (Edge case we ignore: faction-war participation lifts NPP temporarily.)
+    // Torn New Player Protection (wiki): non-NPP can't hit NPP; both-NPP ok only after target's first 24h. War NPP-lift ignored.
     const NPP_DAYS = 14;
     function isAttackableByAge(targetAge, myAge) {
-        if (targetAge == null) return true; // unknown → don't drop, Torn will reject on attack if any
+        if (targetAge == null) return true; // unknown → don't drop, Torn rejects on attack if any
         const meUnderNPP = (myAge != null) && (myAge < NPP_DAYS);
         if (meUnderNPP) {
-            // Both under NPP → target must be past the 24-hour hard block.
-            return targetAge >= 1;
+            return targetAge >= 1; // past the 24h hard block
         }
-        // We're past NPP → target must also be past NPP to be attackable.
         return targetAge >= NPP_DAYS;
     }
 
-    // Physical-country derivation from Torn v2 status. Used to exclude targets
-    // who are in a different country than us — they aren't reachable from an
-    // attack page. Return values:
-    //   "Torn"      — in Torn (Okay/Jail/Federal, or hospitalised in Torn)
-    //   "<Country>" — abroad (state "Abroad"), or hospitalised in a specific
-    //                 foreign country (description "In a <Adjective> hospital")
-    //   null        — unknown or "Traveling" (in transit, unattackable anyway)
-    //
-    // Adjective→country map covers every Torn travel destination. If a future
-    // destination ships without an entry here the target is returned as null
-    // and the country filter falls open — safer than silently dropping them.
+    // Physical country from Torn v2 status, to drop unreachable targets.
+    // Unknown hospital adjective / Traveling → null, so the country filter falls open (never silently drop).
     const HOSPITAL_ADJ_TO_COUNTRY = {
         "Mexican": "Mexico",
         "Caymanian": "Cayman Islands",
@@ -272,9 +218,7 @@
 
     const IS_PDA = typeof PDA_httpGet === "function";
     const HAS_PDA_KEY = PDA_API_KEY !== PDA_PLACEHOLDER && /^[A-Za-z0-9]{16}$/.test(PDA_API_KEY);
-    // Desktop userscript managers expose GM_xmlhttpRequest when the script
-    // requests `@grant GM_xmlhttpRequest`. We prefer it over fetch because
-    // FFScouter's CORS headers may not allow direct calls from torn.com.
+    // Prefer GM_xmlhttpRequest over fetch — FFScouter CORS may block direct torn.com calls.
     // eslint-disable-next-line no-undef
     const GM_XHR = (typeof GM_xmlhttpRequest !== "undefined") ? GM_xmlhttpRequest : null;
 
@@ -327,9 +271,7 @@
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-    // Parse FFScouter's bs_estimate_human ("3.93k" / "2.99b") to a comparable
-    // number. Returns null for missing/unparseable values so callers can sort
-    // them to the end.
+    // Parse FFScouter bs_estimate_human ("3.93k"/"2.99b") to a number; null → sorts last.
     function parseBS(human) {
         if (!human) return null;
         const m = String(human).match(/^\s*([\d.]+)\s*([kKmMbB]?)\s*$/);
@@ -355,9 +297,7 @@
         } catch { return mergeSettings({}); }
     }
 
-    // Shallow-merge top-level keys, but deep-merge the nested `notifications`
-    // object so a partially-stored value (or a value coming in via the
-    // cross-tab storage event after a schema bump) keeps its defaults.
+    // Deep-merge notifications so a partial/older stored value keeps its defaults.
     function mergeSettings(stored) {
         const storedNotif = (stored && typeof stored.notifications === "object" && stored.notifications) || {};
         const storedFields = (storedNotif.fields && typeof storedNotif.fields === "object") ? storedNotif.fields : {};
@@ -377,10 +317,8 @@
     }
 
     // ════════════════════════════════════════════════════════════
-    //  BLACKLIST — per-browser local list of Torn user ids whose
-    //  bounties never appear in the Hunt list or as a toast. Schema:
+    //  BLACKLIST — ids whose bounties never appear. Schema:
     //    { "<numericId>": { name: string|null, note: string, addedAt: number } }
-    //  Stored under LS.blacklist; cross-tab sync via the storage event.
     // ════════════════════════════════════════════════════════════
 
     function loadBlacklist() {
@@ -430,9 +368,7 @@
         return true;
     }
 
-    // Permissive importer — accepts a JSON object exported from this script,
-    // a JSON array of bare ids, or a plain comma/whitespace-separated id
-    // list. Returns the number of entries added (existing entries are kept).
+    // Accepts our JSON export, a JSON id array, or a plain id list. Returns count added.
     function blImport(map, text) {
         const t = String(text || "").trim();
         if (!t) return 0;
@@ -462,10 +398,8 @@
     }
 
     // ════════════════════════════════════════════════════════════
-    //  WATCHLIST — per-browser list of bounty targets to poll fast
-    //  for a hospital→okay ("med-out") transition. Schema:
-    //    { "<numericId>": { name, reward, lastState, addedAt } }
-    //  Stored under LS.watchlist; cross-tab sync via the storage event.
+    //  WATCHLIST — targets polled fast for a hospital→okay ("med-out")
+    //  transition. Schema: { "<numericId>": { name, reward, lastState, addedAt } }
     // ════════════════════════════════════════════════════════════
 
     function loadWatchlist() {
@@ -482,10 +416,9 @@
     }
 
     // ════════════════════════════════════════════════════════════
-    //  API-CALL RATE COUNTER — rolling 60 s window, summed across all
-    //  open BH tabs. Each tab appends to its OWN key (no cross-tab RMW
-    //  race); the reader sums every tab's key and drops keys that have
-    //  gone quiet (their owner tab was closed).
+    //  API-CALL RATE COUNTER — rolling 60s, summed across tabs. Each
+    //  tab appends to its OWN key (no cross-tab RMW race); the reader
+    //  sums all keys and drops ones from closed tabs.
     // ════════════════════════════════════════════════════════════
 
     const RATE_WINDOW_MS = 60_000;
@@ -506,8 +439,7 @@
         } catch { /* quota / private mode — counter just under-reports */ }
     }
 
-    // Total API calls across all tabs in the last 60 s. Side-effect: prunes
-    // this tab's own array and removes keys whose owner tab looks dead.
+    // Sums all tabs' calls in the last 60s; prunes own array + dead tabs' keys.
     function apiCallsLastMinute() {
         const now = Date.now();
         const cutoff = now - RATE_WINDOW_MS;
@@ -534,9 +466,7 @@
         return total;
     }
 
-    // Projected watchlist calls/min for a list size and interval, accounting
-    // for the 750 ms global gate: K targets can't be polled faster than
-    // K*0.75 s, so the effective period is max(interval, K*0.75s).
+    // max(interval, K*0.75s): K targets can't poll faster than the 750ms gate allows.
     function projectedWatchCallsPerMin(count, intervalSec) {
         if (count <= 0) return 0;
         const gateFloorSec = count * (API_DELAY_MS / 1000);
@@ -604,16 +534,14 @@
         return res.json();
     }
 
-    // Debug-logging wrapper around the raw HTTP call. Records status + ms
-    // for every request so the user can watch traffic in real time.
+    // Debug-logging wrapper — records status + ms per request.
     async function _httpGetOnce(url) {
         const started = performance.now();
         const redacted = redactUrl(url);
         try {
             const data = await _httpGetOnceRaw(url);
             const ms = performance.now() - started;
-            // Torn returns 200 OK with { error: { code: 5, error: "Too many requests" } }
-            // on rate limit. Surface that in the log even though the HTTP layer saw 200.
+            // Torn returns 200 with { error:{ code:5 } } on rate limit — surface it despite the 200.
             const tornCode = data && data.error && data.error.code;
             if (tornCode === 5) {
                 logDebug(`GET ${redacted} → 200 · Torn rate limit (code 5)`, "err", ms);
@@ -644,10 +572,7 @@
         }
     }
 
-    // Rate-limit signal for both Torn (JSON envelope error.code=5) and
-    // FFScouter/HTTP layer (status 429). When true, the caller should abort
-    // the whole refresh cycle so prior matches stay on screen instead of
-    // being overwritten with a partial/empty set.
+    // Rate-limit signal: Torn envelope code 5, or HTTP 429. Caller aborts the cycle to keep prior matches.
     function isRateLimitError(err) {
         if (!err) return false;
         if (err.status === 429) return true;
@@ -691,11 +616,8 @@
 
         async fetchAllBounties(minReward = 0) {
             const all = [];
-            // Torn serves the bounty board from an outer cache on top of the
-            // real 30s snapshot; passing a `timestamp` bypasses that outer
-            // layer so each new snapshot surfaces ~20s sooner. It does NOT
-            // beat the 30s `bounties_delay` floor. One timestamp for the whole
-            // pagination loop keeps every page on the same snapshot.
+            // timestamp bypasses Torn's outer board cache (new snapshot ~20s sooner); doesn't beat the
+            // 30s bounties_delay floor. One ts for the whole pagination = consistent snapshot.
             const ts = Math.floor(Date.now() / 1000);
             let url = `${API_BASE}/torn/bounties?limit=100&offset=0&timestamp=${ts}`;
             let delay = 0;
@@ -706,11 +628,7 @@
                 const data = await this._get(pageUrl.toString());
                 if (Array.isArray(data.bounties)) all.push(...data.bounties);
                 if (typeof data.bounties_delay === "number") delay = data.bounties_delay;
-                // The board is strictly reward-descending, so once the cheapest
-                // row on this page is below our price floor, no later page can
-                // hold a qualifying bounty — stop instead of paging the tail.
-                // This collapses ~10 board calls/cycle down to ~1 at typical
-                // minPrice settings.
+                // Board is reward-descending: once the cheapest row is below the floor, stop paging (~10 calls → ~1).
                 const last = data.bounties && data.bounties[data.bounties.length - 1];
                 if (last && last.reward < minReward) break;
                 const next = data._metadata && data._metadata.links && data._metadata.links.next;
@@ -721,15 +639,8 @@
         }
 
         async fetchUserProfile(id) {
-            // profile gives status + age + level + faction_id; bounties gives
-            // THIS target's actual current bounty rows. Combining selections is
-            // a single request (rate limit is per-request, not per-selection),
-            // so the bounty re-confirmation rides along for free. Both
-            // selections require only a Public key. We read the per-target
-            // bounty list from the SAME snapshot as the status, which kills the
-            // skew between the (separately-fetched) global board reward and a
-            // staler cached status — the misalignment that surfaces a claimed
-            // bounty's reward on a target who has already moved on.
+            // profile+bounties in one call (rate limit is per-request). Reading the bounty list from the
+            // same snapshot as status kills the reward/status skew that surfaces a claimed bounty.
             const data = await this._get(`/user/${id}?selections=profile,bounties`);
             return {
                 profile: data.profile || null,
@@ -737,12 +648,8 @@
             };
         }
 
-        // True when the faction is in an active ranked war RIGHT NOW. The
-        // endpoint returns the faction's war history newest-first; the latest
-        // entry is upcoming (start in the future), ongoing (started, not yet
-        // ended — `end` stays 0/null and `winner` null until it finishes), or
-        // finished (end > 0). Only "ongoing" counts. Public-scope, so it works
-        // with any key. One request per call — cache at the WarStatusCache layer.
+        // True only if a ranked war is ongoing now (started, not ended, no winner).
+        // Upcoming (start in future) and finished (end > 0) don't count. Public-scope.
         async fetchFactionAtWar(id) {
             const data = await this._get(`/faction/${Number(id)}/rankedwars`);
             const ws = Array.isArray(data.rankedwars) ? data.rankedwars : [];
@@ -751,15 +658,12 @@
         }
 
         async validateKey() {
-            // /user/profile gives us id + level + age + faction_id in one shot;
-            // age is needed to evaluate Torn's NPP rule against bounty targets.
+            // id+level+age+faction_id in one shot; age drives the NPP rule.
             const data = await this._get("/user/profile");
             return (data && data.profile) || null;
         }
 
-        // /user/bars is declared ApiKeyMinimal in the Torn v2 spec — a Public-
-        // only key returns error code 16 ("Access level of this key is not
-        // high enough") or similar. Callers should catch and fall back.
+        // /user/bars needs a Minimal+ key (Public → code 16). Callers catch and fall back.
         async fetchBars() {
             const data = await this._get("/user/bars");
             return (data && data.bars) || null;
@@ -770,12 +674,8 @@
     //  RANKED-WAR STATUS CACHE (per-faction, TTL-bounded)
     // ════════════════════════════════════════════════════════════
     //
-    // War state changes on the scale of hours, so one lookup per faction is
-    // cached for the user-configured TTL (default 15 min). Only fires for
-    // factions we actually evaluate, and only when the war-status setting is
-    // on — most bounty targets never trigger a call. On a lookup error we fall
-    // back to any stale cached value, else "not at war" (fail open — never
-    // block or badge on a network blip).
+    // War state changes over hours, so one lookup per faction is cached for the
+    // configured TTL. On error, fall back to stale, else "not at war" (fail open).
     class WarStatusCache {
         constructor(api, ttlMsGetter) {
             this.api = api;
@@ -855,8 +755,7 @@
                     });
                 }
             } catch (e) {
-                // Rate-limit aborts the cycle so prior matches stay visible —
-                // partial FFScouter data would otherwise filter good targets out.
+                // Rate-limit aborts the cycle — partial FF data would filter good targets out.
                 if (isRateLimitError(e)) throw e;
                 // Surface the first error but keep processing other chunks.
                 if (!result.error) result.error = e.message || "network_error";
@@ -885,17 +784,13 @@
         getFFKey() { return localStorage.getItem(LS.ffKey) || ""; },
         saveFFKey(k) { localStorage.setItem(LS.ffKey, k); },
         clearFFKey() { localStorage.removeItem(LS.ffKey); },
-        // When the PDA-injected key is in use we don't persist it — it may
-        // change per session and the user controls it through PDA settings.
+        // PDA-injected key isn't persisted — it can change per session; user controls it.
         isPDAKey() { return HAS_PDA_KEY; },
     };
 
     // ════════════════════════════════════════════════════════════
-    //  DONOR CLIENT — talks to the eugene-torn-donors CF worker so the
-    //  Hunt tab can show a green "thanks for the Xanax" banner to anyone
-    //  who has tipped this script. Best-effort and silent on failure;
-    //  the banner is a niceness, not a feature path. Cache lives in
-    //  localStorage (shared across all torn.com tabs).
+    //  DONOR CLIENT — green "thanks for the Xanax" banner for tippers.
+    //  Best-effort, silent on failure; cached 6h in localStorage.
     // ════════════════════════════════════════════════════════════
 
     const DonorClient = {
@@ -919,9 +814,7 @@
             try { localStorage.setItem(LS.donorAck, String(ts)); } catch { /* quota */ }
         },
 
-        // Returns the cached status if it's both fresh and for this userId.
-        // Switching keys (different userId) invalidates the cache so a
-        // freshly-pasted account doesn't see the previous user's banner.
+        // Fresh + same userId only — switching keys must not show the prior user's banner.
         cachedStatus(userId) {
             const c = this._readCache();
             if (!c || c.userId !== userId) return null;
@@ -929,20 +822,14 @@
             return c;
         },
 
-        // Resolve our own Torn user id without depending on the Hunter's
-        // refresh loop having completed. Caches in localStorage so a cold
-        // panel open is instant after the first session. Falls back to a
-        // direct /user/?selections=basic call (api.torn.com is in Torn's
-        // page CSP allowlist, so plain fetch works there).
+        // Resolve our user id without waiting on the refresh loop; cache it in localStorage.
         async getUserId() {
             const stored = localStorage.getItem(LS.userId);
             if (stored && /^\d+$/.test(stored)) return parseInt(stored, 10);
             const key = KeyResolver.resolveTornKey();
             if (!key) return null;
             try {
-                // Reuse the existing PDA/GM/fetch dispatcher — native fetch
-                // to api.torn.com is unreliable on Torn PDA's webview, which
-                // is why the rest of the script uses PDA_httpGet there.
+                // Native fetch to api.torn.com is unreliable on PDA's webview — reuse the dispatcher.
                 const d = await _httpGetOnceRaw(`https://api.torn.com/v2/user/profile?key=${encodeURIComponent(key)}`);
                 const id = d && d.profile && d.profile.id;
                 if (id) {
@@ -953,12 +840,7 @@
             return null;
         },
 
-        // Three transports in order of preference per environment:
-        //   - PDA      → PDA_httpGet (bypasses WebView restrictions; native
-        //                fetch from PDA's webview can be blocked even when
-        //                the BE returns CORS:*)
-        //   - desktop  → GM_xmlhttpRequest (bypasses Torn's page CSP)
-        //   - fallback → native fetch (only fires if both above absent)
+        // Transport per env: PDA → PDA_httpGet, desktop → GM_xmlhttpRequest (CSP bypass), else native fetch.
         async _request(url) {
             try {
                 if (IS_PDA) {
@@ -1007,9 +889,7 @@
             finally { this._inflight = null; }
         },
 
-        // Banner shows only if the server reports a donation newer than the
-        // ts the user has already dismissed for. New Xanax → ts advances on
-        // the server → banner reappears.
+        // Show only for a donation newer than the ts the user dismissed. New Xanax → server ts advances → banner returns.
         shouldShow(status) {
             if (!status || !status.donor) return false;
             if (!status.lastDonationTs) return false;
@@ -1075,13 +955,10 @@
         updateSettings(next) {
             this.settings = { ...this.settings, ...next };
             saveSettings(this.settings);
-            // Reset diff memory + re-seed silently on the next apply so a
-            // filter tweak doesn't bombard the user with toasts for matches
-            // that were already on screen under the previous filter.
+            // Re-seed silently so a filter tweak doesn't re-toast on-screen matches.
             this.lastMatchIds = new Set();
             this._reseedSilent = true;
-            // Invalidate the cross-tab cache — its matches were computed with the
-            // previous filters, so neither this tab nor its siblings should reuse it.
+            // Invalidate the cross-tab cache — computed under the old filters.
             try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
         }
 
@@ -1091,9 +968,7 @@
             return Object.prototype.hasOwnProperty.call(this.blacklist, String(Number(id)));
         }
 
-        // Add a player to the blacklist and immediately strip any of their
-        // bounties from this tab's live match list. The cross-tab storage
-        // event will broadcast the same prune to sibling tabs.
+        // Add + immediately strip their bounties from this tab's matches (storage event prunes siblings).
         addToBlacklist(id, name) {
             const ok = blAddEntry(this.blacklist, id, name);
             if (!ok) return false;
@@ -1108,9 +983,7 @@
             const ok = blRemove(this.blacklist, id);
             if (!ok) return false;
             saveBlacklist(this.blacklist);
-            // The target may not be back on the bounty board, and we don't
-            // want to burn a refresh just to "maybe" surface them — the next
-            // tick will pick them up naturally if they reappear.
+            // Don't force a refresh — next tick surfaces them if they're still on the board.
             try { localStorage.removeItem(LS.shared); } catch { /* noop */ }
             if (this.onUpdate) this.onUpdate();
             return true;
@@ -1123,8 +996,7 @@
             return true;
         }
 
-        // Import a JSON / id-list blob from the Settings tab. Merges into the
-        // existing map (doesn't wipe). Returns the number of entries added.
+        // Merge (not wipe) a JSON/id blob. Returns count added.
         importBlacklist(text) {
             const before = Object.keys(this.blacklist).length;
             const added = blImport(this.blacklist, text);
@@ -1144,8 +1016,7 @@
             if (this.onUpdate) this.onUpdate();
         }
 
-        // Called by the storage-event listener when another tab mutated the
-        // blacklist. Re-reads from LS and re-prunes our visible matches.
+        // Another tab changed the blacklist — re-read + re-prune.
         applyExternalBlacklist() {
             this.blacklist = loadBlacklist();
             this._stripBlacklistedFromMatches();
@@ -1160,9 +1031,7 @@
 
         watchlistCount() { return Object.keys(this.watchlist).length; }
 
-        // Add a match row to the med-out watchlist. Seeds lastState from the
-        // row's current status so the next poll that flips it to Okay fires
-        // the alert. Starts the poll loop if it wasn't running.
+        // Seed lastState from current status so the next flip to Okay fires the alert.
         addToWatchlist(b) {
             const key = String(Number(b.target_id));
             if (!/^\d+$/.test(key) || key === "0") return false;
@@ -1188,8 +1057,7 @@
             return true;
         }
 
-        // Storage-event handler — another tab changed the watchlist. Re-read
-        // and (re)assess whether this tab should be polling.
+        // Another tab changed the watchlist — re-read + reassess polling.
         applyExternalWatchlist() {
             this.watchlist = loadWatchlist();
             if (this.watchlistCount() === 0) this.stopWatch();
@@ -1197,9 +1065,7 @@
             if (this.onUpdate) this.onUpdate();
         }
 
-        // Start the watch loop if there's anything to watch and it isn't
-        // already running. Idempotent — safe to call from add, visibility
-        // change, storage event, and boot.
+        // Idempotent — safe from add / visibility / storage / boot.
         ensureWatchLoop() {
             if (this._watchRunning || this.watchlistCount() === 0) return;
             this._watchRunning = true;
@@ -1227,9 +1093,7 @@
             return Math.max(0, Math.round((this._watchNextAt - Date.now()) / 1000));
         }
 
-        // Called on visibilitychange when this tab becomes visible — the
-        // visible tab owns polling, so kick a tick immediately for a snappy
-        // handoff when the user switches tabs.
+        // Visible tab owns polling — kick a tick on focus for a snappy handoff.
         kickWatchIfVisible() {
             if (document.visibilityState !== "visible") return;
             this.watchlist = loadWatchlist(); // adopt anything a sibling added while we were hidden
@@ -1241,19 +1105,14 @@
         async _watchTick() {
             if (!this._watchRunning) return;
             const interval = this._watchIntervalMs();
-            // Only the visible tab polls, and only while bounty search is on —
-            // the master switch is one kill-switch for all API usage. A hidden
-            // or search-off tab keeps a cheap heartbeat timer alive (no requests)
-            // so it resumes instantly on focus / re-enable. Entries are kept.
+            // Only the visible, search-on tab polls. Others keep a no-request heartbeat so they resume on focus.
             if (document.visibilityState !== "visible" || !this.settings.searchEnabled
                 || !this.api.key || this.watchlistCount() === 0) {
                 if (this.watchlistCount() === 0) { this.stopWatch(); return; }
                 this._scheduleWatch(interval);
                 return;
             }
-            // A poll is already in flight (e.g. focus-kick fired while the timer
-            // tick was mid-loop) — skip this run. The active poll reschedules
-            // itself at the end, so the loop stays alive.
+            // A poll is already in flight (focus-kick vs timer) — skip; the active one reschedules.
             if (this._watchTicking) return;
             this._watchTicking = true;
             let changed = false;
@@ -1267,10 +1126,7 @@
                 try {
                     const { profile, bounties } = await this.api.fetchUserProfile(Number(id));
                     if (!this.watchlist[id]) continue; // removed mid-loop
-                    // Drop when the best bounty now on the target is worth less
-                    // than what we signed up to watch — the original was claimed
-                    // or expired and only a cheaper (or no) bounty remains. A
-                    // same-or-higher replacement is kept (still worth the hit).
+                    // Drop if the best remaining bounty is below what we signed up to watch (original claimed/expired). Higher replacement kept.
                     const own = Array.isArray(bounties)
                         ? bounties.filter((x) => Number(x.target_id) === Number(id))
                         : [];
@@ -1328,9 +1184,7 @@
             logDebug(`watchlist: ${entry.name || id} is OUT of hospital — alert fired`, "ok");
         }
 
-        // Backfill missing display names from anything we observe on the
-        // bounty board. Saves only when at least one name changed so we
-        // don't write the same JSON every tick.
+        // Backfill missing names from the board; save only when something changed.
         _backfillBlacklistNames(bounties) {
             let changed = false;
             for (const b of bounties) {
@@ -1342,9 +1196,7 @@
             if (changed) saveBlacklist(this.blacklist);
         }
 
-        // Drop currently-shown matches whose target is now blacklisted, then
-        // re-run the toast-pruning callback so any blacklisted toast vanishes
-        // from the stack immediately. Cheaper than a full refresh.
+        // Drop now-blacklisted matches + re-prune toasts. Cheaper than a full refresh.
         _stripBlacklistedFromMatches() {
             const before = this.lastMatches.length;
             const filtered = this.lastMatches.filter((m) => !this.isBlacklisted(m.target_id));
@@ -1356,17 +1208,12 @@
             }
         }
 
-        // Apply a settings change that originated in another tab (via storage
-        // event). Updates in-memory state and runs the same stop/start
-        // transition the local Settings UI does — but does NOT call
-        // saveSettings (the other tab already persisted), to avoid a write
-        // ping-pong between tabs.
+        // Another tab's settings change. No saveSettings (they already persisted) — avoids write ping-pong.
         applyExternalSettings(next) {
             this.settings = { ...this.settings, ...next };
             this.lastMatchIds = new Set();
             this._reseedSilent = true;
-            // Stop unconditionally, then let start() self-gate. Mirrors the
-            // local persistFilters() path.
+            // Stop, then let start() self-gate (mirrors persistFilters).
             this.stop();
             if (this.settings.searchEnabled && this.settings.refreshSec > 0) {
                 this.pausedReason = null;
@@ -1418,31 +1265,13 @@
             if (s.myCountry != null) this.myCountry = s.myCountry;
         }
 
-        // Apply a new match list: diff against previous to fire toasts, update
-        // lastMatches/lastMatchIds. Shared by the real-refresh path, the
-        // cross-tab free-ride path, and the adoptSharedPayload storage event.
-        //
-        // Two suppression rules:
-        //  1. **First-apply seed.** Right after the Hunter is constructed (or
-        //     after settings change), there is no prior state to diff against.
-        //     Without this guard, a fresh tab that free-rides on stale shared
-        //     data fires a toast for every cached match — including bounties
-        //     the user already claimed (the cached reward is stale). The Hunt
-        //     tab still shows the seeded matches, so the data isn't lost.
-        //  2. **Energy pause.** When the energy gate is engaged we never fire
-        //     a toast, even if a path other than _tick reaches us (e.g. a
-        //     manual refresh or a sibling tab's storage event). Defense in
-        //     depth on top of the gate in _tick.
+        // Diff vs previous to fire toasts. Suppress toasts on: first apply from another tab's
+        // (possibly stale) shared data, a silent re-seed after a filter change, or an energy pause.
         _applyMatches(matches, fromShared = false) {
             const matchKey = (m) => `${m.target_id}|${m.reward}`;
             const currentIds = new Set(matches.map(matchKey));
             const firstApply = !this._firstApplyDone;
             this._firstApplyDone = true;
-            // Suppress toasts only when the batch isn't trustworthy-new:
-            //  - first apply sourced from another tab's shared data (may be
-            //    stale/claimed) — but NOT a cold-start's own fresh refresh
-            //  - the apply right after a filter change (re-seed silently)
-            //  - energy pause
             const suppressed = (firstApply && fromShared)
                 || this._reseedSilent
                 || this.pausedReason === "low-energy";
@@ -1453,18 +1282,13 @@
             }
             this.lastMatches = matches;
             this.lastMatchIds = currentIds;
-            // Keep the toast stack in sync with the Hunt-tab table. Without this,
-            // a target that drops out of the match list (claimed elsewhere,
-            // hospital timer expired, or a partial rate-limited cycle that
-            // didn't re-confirm them) would leave its "attack me" toast on
-            // screen for the rest of its 15-second TTL.
+            // Keep the toast stack in sync with the table — else a dropped match's toast lingers its full TTL.
             if (this.onMatchesApplied) {
                 this.onMatchesApplied(new Set(matches.map((m) => Number(m.target_id))));
             }
         }
 
-        // Called by the `storage` event listener when another tab writes new
-        // shared data. Updates our in-memory state + re-renders via onUpdate.
+        // Another tab wrote shared data — adopt it + re-render.
         adoptSharedPayload(s) {
             if (!s) return;
             this._adoptSharedIdentity(s);
@@ -1484,8 +1308,7 @@
         start() {
             if (this._running) return;
             if (!this.settings.searchEnabled) {
-                // Honor the master kill-switch even on cold boot — don't start
-                // the loop, and let the Hunt tab render the "disabled" banner.
+                // Honor the kill-switch on cold boot — render the "disabled" banner, don't start.
                 this.pausedReason = "disabled";
                 if (this.onUpdate) this.onUpdate();
                 return;
@@ -1494,12 +1317,7 @@
             this._tick();
         }
 
-        // Returns a pause reason ("hospital"|"jail"|"traveling") when the
-        // matching opt-in toggle is on AND our own status is in that state,
-        // else null. `state` defaults to the last-known own state so the _tick
-        // free-ride gate can use it without an extra fetch; refresh() passes
-        // the freshly-read state. Costs nothing — `state` rides on the
-        // /user/profile call refresh() already makes.
+        // Pause reason from our own state when the matching toggle is on. Free — state rides the profile call.
         _selfStatusPauseReason(state) {
             const s = state !== undefined ? state : this.mySelfState;
             if (!s) return null;
@@ -1509,11 +1327,7 @@
             return null;
         }
 
-        // Returns true when "Pause when energy is below N" is enabled AND the
-        // current energy reading is below N. Side-effects: updates myEnergy
-        // and lastEnergyError so the Settings/Hunt UI stays accurate. Quietly
-        // returns false on errors (scope-too-low key, network) so the script
-        // keeps working — the user just won't see the gate apply.
+        // True when the energy gate is on and energy < N. Updates myEnergy/lastEnergyError; fails open (never blocks hunting).
         async _isPausedByEnergy() {
             if (!this.settings.pauseOnLowEnergy || this.settings.minEnergy <= 0) {
                 this.myEnergy = null;
@@ -1529,8 +1343,7 @@
                     return energy.current < this.settings.minEnergy;
                 }
             } catch (e) {
-                // Torn code 16 = scope too low; treat anything else as
-                // a transient error. Either way, don't block hunting.
+                // code 16 = scope too low; anything else transient. Either way, don't block hunting.
                 this.lastEnergyError = (e && e.tornCode === 16) ? "scope" : "error";
                 logDebug(`bars fetch failed (${e && e.tornCode ? "code " + e.tornCode : "network"}): ${e && e.message || "error"}`, "err");
             }
@@ -1592,8 +1405,7 @@
             } catch (err) {
                 this.lastError = err;
                 if (isRateLimitError(err)) {
-                    // refresh() already logged the scanned/partial breakdown
-                    // when it knew it; just note the table state here.
+                    // refresh() already logged the partial breakdown; just note table state.
                     logDebug(`refresh aborted — rate limit; ${this.lastMatches.length} match${this.lastMatches.length === 1 ? "" : "es"} on screen${this.partialFromRateLimit ? " (partial)" : ""}`, "err");
                 } else {
                     logDebug(`refresh failed: ${err.message || "error"}`, "err");
@@ -1607,8 +1419,7 @@
             this._timer = setTimeout(() => this._tick(), waitSec * 1000);
         }
 
-        // Push the next scheduled auto-refresh out to now + waitSec. No-op when
-        // the loop isn't running or auto-refresh is off (nothing to reschedule).
+        // Push the next auto-refresh to now + waitSec. No-op if the loop is off.
         _rescheduleTick(waitSec) {
             if (!this._running || this.settings.refreshSec <= 0) return;
             if (this._timer) clearTimeout(this._timer);
@@ -1616,9 +1427,7 @@
             this._timer = setTimeout(() => this._tick(), waitSec * 1000);
         }
 
-        // "Refresh now" button. Runs a refresh, then postpones the next auto
-        // refresh by a full interval from now — so a manual hit doesn't cause a
-        // second fetch moments later on the old schedule.
+        // "Refresh now": refresh, then push the next auto-refresh a full interval out (no double-fetch).
         async manualRefresh() {
             try {
                 const delaySec = await this.refresh();
@@ -1630,11 +1439,8 @@
             }
         }
 
-        // Reentrancy guard. Auto-tick, the "Refresh now" button, and cross-tab
-        // settings sync can all fire a refresh at once; without this they'd run
-        // overlapping pipelines — double the API calls (risking a rate-limit
-        // block) and an older cycle landing last, overwriting fresher matches.
-        // Concurrent callers share the one in-flight promise instead.
+        // Reentrancy guard — auto-tick, "Refresh now", and cross-tab sync can all fire at once;
+        // share one in-flight promise (else double calls + a stale cycle landing last).
         refresh() {
             if (this._refreshing) return this._refreshing;
             this._refreshing = this._refreshImpl().finally(() => { this._refreshing = null; });
@@ -1647,9 +1453,7 @@
             logDebug(`refresh: start`, "info");
             if (this.onUpdate) this.onUpdate({ loading: true });
 
-            // Resolve our ID/level/age/country. ID/level/age are near-immutable
-            // so we cache them after the first success, but `country` flips
-            // whenever we travel, so we re-read status on every cycle.
+            // id/level/age are near-immutable (cached); country flips on travel, so re-read status each cycle.
             try {
                 const profile = await this.api.validateKey();
                 if (profile) {
@@ -1657,17 +1461,13 @@
                     this.myUserLevel = (typeof profile.level === "number") ? profile.level : this.myUserLevel;
                     this.myUserAge = (typeof profile.age === "number") ? profile.age : this.myUserAge;
                     this.myCountry = getPlayerCountry(profile.status) || this.myCountry;
-                    // Own status.state drives the hospital/jail/traveling pause
-                    // gates below. Free — already in this profile response.
+                    // drives the pause gates below; free from this response
                     if (profile.status && profile.status.state) this.mySelfState = profile.status.state;
                 }
             } catch { /* non-fatal — keep previous identity/country */ }
 
-            // Self-status gate — pause when we can't act on a bounty anyway
-            // (in hospital / jail / mid-flight). All opt-in, all free (uses the
-            // status from the profile call above). Mirrors the energy gate:
-            // skip the bounty fetch and don't write shared, so sibling tabs
-            // can't free-ride this cycle either.
+            // Skip the fetch when we can't act (hospital/jail/flight). Opt-in, free.
+            // Don't write shared, so siblings can't free-ride this cycle either.
             const selfPause = this._selfStatusPauseReason();
             if (selfPause) {
                 this.pausedReason = selfPause;
@@ -1677,12 +1477,7 @@
                 return 0;
             }
 
-            // Energy gate — skip the (expensive) bounties fetch when the
-            // player can't attack anyway. Opt-in; needs a Minimal+ key.
-            // When called from _tick() the gate has already run there, but
-            // a manual "Refresh now" lands here directly so we re-check.
-            // Both paths share _isPausedByEnergy() which sets myEnergy /
-            // lastEnergyError so the Settings hint stays accurate.
+            // Skip the expensive fetch when energy's too low. Re-checked here because manual refresh bypasses _tick's gate.
             if (await this._isPausedByEnergy()) {
                 this.pausedReason = "low-energy";
                 if (this.onMatchesApplied) this.onMatchesApplied(new Set());
@@ -1695,10 +1490,7 @@
             const { bounties, delaySec } = await this.api.fetchAllBounties(this.settings.minPrice);
             logDebug(`fetched ${bounties.length} bounties (cache delay ${delaySec || 0}s)`, "ok");
 
-            // Collapse multiple bounty rows on the same target + same reward
-            // into one entry with an aggregated count. Rows with different
-            // reward amounts stay separate. This avoids duplicate FFScouter
-            // and profile calls AND cleans up the Hunt list.
+            // Collapse same-target+same-reward rows into one with an aggregated count (dedupes FF/profile calls, cleans the list).
             const grouped = new Map();
             for (const b of bounties) {
                 const key = `${b.target_id}|${b.reward}`;
@@ -1721,17 +1513,10 @@
                 matches: 0,
             };
 
-            // Opportunistically backfill blacklist entries' display names from
-            // anything Torn returned this cycle. Cheap (one Map lookup per
-            // bounty) and means blacklisted entries no longer show up as
-            // "(unknown)" once the user has seen the target's bounty once.
+            // Fill blacklist names from this cycle's board so they stop showing "(unknown)". Cheap.
             this._backfillBlacklistNames(dedupedBounties);
 
-            // 1) Price + self + blacklist filter. Blacklist runs first so we
-            // never burn FFScouter / profile API budget on a player the user
-            // has chosen to exclude. Age-based "new-account" filter happens
-            // later (in step 3) since target age requires a per-user profile
-            // fetch anyway.
+            // 1) Blacklist first — never spend FF/profile budget on an excluded player. Age filter waits for step 3 (needs a profile anyway).
             const afterPriceAndSelf = dedupedBounties.filter((b) =>
                 b.reward >= this.settings.minPrice
                 && (this.myUserId == null || b.target_id !== this.myUserId)
@@ -1754,8 +1539,7 @@
                 .map((b) => {
                     const e = ff.map.get(Number(b.target_id));
                     if (e) return { ...b, ff: e.ff, bs: e.bs };
-                    // Target not in FF map (FFScouter returned null FF, or wasn't
-                    // in the response at all). Include if the user opted in.
+                    // not in FF map (null FF or absent) — include only if opted in
                     return includeUnknown ? { ...b, ff: null, bs: null } : null;
                 })
                 .filter((b) => {
@@ -1788,26 +1572,14 @@
                 counts.statusBreakdown[state] = (counts.statusBreakdown[state] || 0) + 1;
                 const until = p.status.until || 0;
                 const remaining = Math.max(0, until - nowSec);
-                // Country filter — must be in the same country as us to be
-                // attackable. Only applied when both sides are known; if we
-                // can't determine our own location (pre-first-profile, or
-                // "Traveling") or the target's (unknown hospital adjective),
-                // the filter falls open so we don't silently drop everyone.
+                // Same-country only when both locations are known; unknown/pre-profile falls open (never drop everyone).
                 const targetCountry = getPlayerCountry(p.status);
                 if (this.settings.sameCountryOnly && this.myCountry && targetCountry && targetCountry !== this.myCountry) {
                     counts.differentCountry++;
                     continue;
                 }
-                // Reconcile the global-board reward against THIS target's own
-                // bounty list, pulled from the same call as `status`. The global
-                // board row that put `b` here can be stale — a bounty claimed
-                // seconds ago still lingers on the board (Torn's `bounties_delay`),
-                // and our status read could be from a different instant. If the
-                // target's own list no longer carries `b.reward`, that bounty is
-                // gone (claimed/expired); surfacing it would notify the wrong
-                // amount. Only reconcile when we actually have the list — a null
-                // (selection missing / older cache entry) falls open to the board
-                // reward so we never silently drop everyone.
+                // Reconcile the board reward against the target's own list (same call as status) — the board
+                // lags (bounties_delay), so a claimed bounty lingers. Missing list falls open to the board reward.
                 let row = b;
                 if (Array.isArray(p.bounties)) {
                     const own = p.bounties.filter((x) => Number(x.target_id) === Number(b.target_id));
@@ -1822,12 +1594,9 @@
                         .reduce((n, x) => n + ((typeof x.quantity === "number" && x.quantity > 0) ? x.quantity : 1), 0);
                     if (liveQty > 0) row = { ...b, bountyCount: liveQty };
                 }
-                // Online/idle/offline — from the same profile snapshot, so it
-                // rides through to the row (and the shared payload) for free.
+                // online/idle/offline from the same snapshot — free
                 row = { ...row, lastAction: p.lastAction || null, factionId: p.faction_id || null };
-                // Location marker — set when the target is somewhere you can't
-                // attack from right now. "In transit" for mid-flight targets
-                // (country unknown), otherwise their country name.
+                // Where the target is when unreachable: "In transit" mid-flight, else the country.
                 const away = state === "Traveling"
                     ? { awayFromMe: true, location: "In transit" }
                     : (targetCountry && this.myCountry && targetCountry !== this.myCountry)
@@ -1838,19 +1607,14 @@
                 } else if (state === "Hospital" && (this.settings.hospNoLimit || remaining <= hospWindowSec)) {
                     matches.push({ ...row, statusState: "Hospital", hospUntil: until, ...away });
                 } else if (!this.settings.sameCountryOnly && (state === "Abroad" || state === "Traveling")) {
-                    // Only surfaced in "include all locations" mode — unattackable
-                    // until you're co-located, shown for planning/awareness.
+                    // only in "include all locations" mode — shown for awareness, not attackable yet
                     matches.push({ ...row, statusState: state, hospUntil: 0, ...away });
                 }
             }
             matches.sort((a, b) => b.reward - a.reward);
             counts.matches = matches.length;
 
-            // 4a) Rate-limit hit mid-scan: surface partial results when they're
-            // useful (we either found something this cycle, or had nothing to
-            // begin with — never overwrite a known-good prior list with
-            // something demonstrably worse). Cross-tab share is skipped so
-            // other tabs don't free-ride on partial data.
+            // 4a) Rate-limit mid-scan: show partials only if useful — never overwrite a good prior list with worse. No cross-tab share of partials.
             if (profileRLErr) {
                 const replace = matches.length > 0 || this.lastMatches.length === 0;
                 if (replace) {
@@ -1859,9 +1623,7 @@
                     this.partialFromRateLimit = true;
                 }
                 logDebug(`refresh aborted — rate limit at profile step; scanned ${counts.scanned}/${byFF.length}, ${matches.length} partial match${matches.length === 1 ? "" : "es"}${replace ? " (shown)" : " (kept prior)"}`, "err", performance.now() - refreshStart);
-                // Clear the board activity bar before bailing — _tick's catch
-                // re-renders but doesn't pass loading:false, so the bar would
-                // otherwise stay stuck spinning.
+                // Clear the activity bar — _tick's catch re-renders but won't pass loading:false.
                 if (this.onUpdate) this.onUpdate({ loading: false });
                 // _tick will set lastError and trigger the (banner-bearing) re-render.
                 throw profileRLErr;
@@ -1870,9 +1632,7 @@
             // 4b) Diff for toasts + render + cross-tab broadcast.
             this.partialFromRateLimit = false;
             this.lastCounts = counts;
-            // Ranked-war badge — opt-in, one cached lookup per unique faction.
-            // Runs only on the clean path (never during a rate-limited partial
-            // cycle, so we don't spend more budget when already throttled).
+            // War badge — opt-in, one cached lookup per faction; clean path only (don't spend budget while throttled).
             if (this.settings.warStatus && matches.length) {
                 const facIds = [...new Set(matches.map((m) => m.factionId).filter(Boolean))];
                 const warMap = await this.warStatus.resolveMany(facIds);
@@ -1891,19 +1651,13 @@
             const out = new Map();
             const now = Date.now();
             const stale = [];
-            // De-dupe IDs so repeated target_ids don't trigger parallel
-            // fetches for the same player. The cache lookup alone isn't
-            // enough — on a cold start every duplicate would still miss.
+            // De-dupe so repeated target_ids don't fire parallel fetches (cache alone misses on cold start).
             const unique = [...new Set(ids)];
             for (const id of unique) {
                 const c = this._statusCache.get(id);
                 if (c) {
                     const d = c.data;
-                    // Only the short freshness dedupe — never trust a cached
-                    // Hospital entry for its full `until`. A target can med out
-                    // or be revived early, flipping to Okay; trusting `until`
-                    // would keep them cached as Hospital for hours and we'd
-                    // miss the med-out (never re-fetch → never fire the card).
+                    // Short freshness dedupe only — never trust a cached Hospital `until` (med-out flips to Okay; we'd miss it).
                     if (now - c.fetchedAt < STATUS_CACHE_MS) {
                         out.set(id, d);
                         continue;
@@ -1924,22 +1678,16 @@
                                 status: profile.status || null,
                                 age: typeof profile.age === "number" ? profile.age : null,
                                 faction_id: profile.faction_id || null,
-                                // "Online" | "Idle" | "Offline" — rides the same
-                                // profile call, so the row dot costs no extra request.
+                                // rides the same profile call — no extra request
                                 lastAction: (profile.last_action && profile.last_action.status) || null,
-                                // Per-target bounty rows from the SAME snapshot as
-                                // status. null = the call didn't return a bounties
-                                // array (treated as "unknown", we don't reconcile);
-                                // [] = the target genuinely has no bounties now.
+                                // same snapshot as status. null = no array (unknown, don't reconcile); [] = genuinely none.
                                 bounties: bounties,
                             };
                             out.set(id, data);
                             this._statusCache.set(id, { data, fetchedAt: Date.now() });
                         }
                     } catch (err) {
-                        // Rate-limit: stop all workers and surface what we have.
-                        // The caller decides whether to keep prior matches or
-                        // show a partial cycle, so we don't throw away `out`.
+                        // Rate-limit: stop workers, keep `out` — caller decides partial vs prior.
                         if (isRateLimitError(err)) { rateLimitErr = err; return; }
                         // Other per-target errors: row just won't match this cycle.
                     }
@@ -1960,9 +1708,7 @@
     // ════════════════════════════════════════════════════════════
 
     class Toaster {
-        // `getSettings` returns the live hunter.settings reference each call,
-        // so user-driven changes in the Settings tab take effect on the next
-        // toast without rewiring anything.
+        // Live settings ref each call, so Settings-tab changes apply on the next toast.
         constructor(getSettings) {
             this.getSettings = getSettings || (() => DEFAULT_SETTINGS);
             this.container = null;
@@ -1987,17 +1733,13 @@
             this.applySettings();
         }
 
-        // Apply position/width/alignment from settings to the live container
-        // and any cards already on screen. Safe to call repeatedly — called
-        // from ensureContainer() and from the Settings panel whenever the
-        // notification config changes (locally or cross-tab).
+        // Apply position/width to the container + live cards. Idempotent.
         applySettings() {
             if (!this.container) return;
             const n = this._notif();
             const pos = n.position || "bottom-right";
             const c = this.container;
-            // Reset all anchors before re-applying so a top↔bottom flip clears
-            // the previous edge.
+            // reset anchors so a top↔bottom flip clears the old edge
             c.style.top = "";
             c.style.bottom = "";
             c.style.left = "";
@@ -2106,8 +1848,7 @@
             const locationChip = (showLocation && b.awayFromMe && b.location)
                 ? `<span class="bh-chip bh-badge-travel">📍 ${escHtml(b.location)}</span>`
                 : "";
-            // War chip rides the same gate as the badge (warActive is only set
-            // when the setting is on), so no separate notification-field toggle.
+            // warActive only set when the setting's on — no separate field toggle needed
             const warChip = b.warActive
                 ? `<span class="bh-chip bh-badge-war" title="Faction in an active ranked war — only the war opponent can hit for 60s after hospital/jail.">⚔ War</span>`
                 : "";
@@ -2159,9 +1900,7 @@
                 });
             }
 
-            // Desktop: whole card is clickable for convenience. Touch devices:
-            // require the explicit Attack button so a mis-tap near the close
-            // button can't launch an attack.
+            // Desktop: whole card clickable. Touch: require the Attack button (mis-tap safety).
             const isTouch = (typeof matchMedia === "function") && matchMedia("(hover: none)").matches;
             if (!isTouch) el.addEventListener("click", attack);
 
@@ -2203,12 +1942,8 @@
             this._cards.push(card);
         }
 
-        // Touch-swipe horizontal dismiss — shared by bounty cards and the
-        // overflow "+N more" card. Desktop pointer drags are ignored on
-        // purpose so mouse-users' click-to-act gestures aren't hijacked.
-        // `moved` is sticky once |dx|>6 and is cleared by the capture-phase
-        // click swallow, so a sub-threshold swipe can't fall through to the
-        // card's click handler (attack / open-hunt-list).
+        // Touch-swipe dismiss (desktop drags ignored so clicks aren't hijacked).
+        // moved sticky once |dx|>6; capture-phase click swallow blocks a sub-threshold swipe from acting.
         _attachSwipeToDismiss(el, card) {
             let startX = 0, dx = 0, dragging = false, moved = false;
             el.addEventListener("pointerdown", (e) => {
@@ -2252,11 +1987,7 @@
             }, true);
         }
 
-        // Small "Clear all" pill button, appears above the stack when 2+
-        // toasts are on screen. Lives inside the container as the last DOM
-        // child so the reversed column flex puts it visually on top.
-        // Clicking only dismisses the toast cards — Hunt-tab matches are
-        // driven by Hunter.lastMatches and are untouched.
+        // "Clear all" pill above the stack when 2+ toasts. Only dismisses toasts — Hunt matches untouched.
         _updateClearAllButton() {
             const toastCount = this._cards.filter((c) => !c.isClearAll).length;
             const existing = this._clearAllEl;
@@ -2299,7 +2030,6 @@
             if (card.timer) clearTimeout(card.timer);
             if (card.el && card.el.parentNode) card.el.parentNode.removeChild(card.el);
             this._cards = this._cards.filter((c) => c !== card);
-            // Count dropped — maybe the Clear-all button should vanish too.
             this._updateClearAllButton();
         }
 
@@ -2308,9 +2038,7 @@
             if (this._clearAllEl) { this._clearAllEl.remove(); this._clearAllEl = null; }
         }
 
-        // Remove bounty toasts whose target is no longer in the match set.
-        // The "+N more" overflow card is left alone — it represents a prior
-        // batch rather than a specific target, and times out on its own.
+        // Drop toasts whose target left the match set. "+N more" is left — it's a batch, times out on its own.
         pruneTo(currentTargetIds) {
             for (const c of [...this._cards]) {
                 if (c.isMore || c.isClearAll || c.id == null) continue;
@@ -2351,9 +2079,7 @@
   white-space:nowrap;font-size:14px;transition:all .15s}
 .bh-tab:hover{color:#ccc!important;background:#2a2a2a}
 .bh-tab.active{color:#ef5350!important;border-bottom-color:#ef5350}
-/* Refresh-activity bars. Board (red) = bounty refresh, scheduled or manual.
-   Watch (amber) = watchlist med-out poll. Both persist across content
-   re-renders because #bh-progress lives outside #bh-content. */
+/* Board (red) = bounty refresh, watch (amber) = watchlist poll. Outside #bh-content so they survive re-renders. */
 #bh-progress{flex-shrink:0;background:#1c1c1c}
 .bh-prog-lane{position:relative;height:3px;overflow:hidden;opacity:0;transition:opacity .25s}
 #bh-prog-watch{height:2px}
@@ -2421,10 +2147,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 .bh-field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
 .bh-field label{color:#bbb;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
 .bh-input,.bh-select{background:#252525;border:1px solid #444;color:#ddd;padding:6px 10px;border-radius:4px;font-size:14px;width:100%}
-/* Visual masking for API-key inputs. We intentionally avoid type="password"
-   because Chrome/Safari then prompt to save the value as a login credential
-   and password managers inject auto-fill UI on top. CSS masking gives the
-   bullet-dot look without the browser treating the field as a login. */
+/* CSS-masked, not type=password — avoids browser "save login" + password-manager auto-fill. */
 .bh-input-masked{-webkit-text-security:disc;text-security:disc;font-family:monospace;letter-spacing:2px}
 .bh-btn{padding:7px 14px;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600;color:#ddd}
 .bh-btn-primary{background:#4fc3f7;color:#111!important}.bh-btn-primary:hover{background:#29b6f6}
@@ -2453,10 +2176,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 #bh-auth h3{margin:0 0 12px;color:#fff}
 #bh-auth .bh-auth-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 
-/* Toasts — anchor (top/bottom/left/right), align-items, and per-card width
-   are all set inline by Toaster.applySettings() based on user-configured
-   notifications.position / .width. Defaults match the legacy bottom-right /
-   300px look. */
+/* Toasts — anchor/align/width set inline by Toaster.applySettings() from notifications config. */
 #bh-toasts{position:fixed;display:flex;flex-direction:column-reverse;gap:8px;
   z-index:2147483646;pointer-events:none;max-width:calc(100vw - 32px)}
 .bh-toast{pointer-events:auto;width:300px;max-width:100%;background:#1e1e1e;border:1px solid #444;border-left:4px solid #ef5350;
@@ -2561,9 +2281,7 @@ table.bh-table{width:100%;border-collapse:collapse}
     transform:none;max-height:100vh;height:100vh}
   .bh-grid-2{grid-template-columns:1fr}
   .bh-table td,.bh-table th{padding:6px 6px;font-size:12px}
-  /* Comfier padding on touch screens; width still follows the user's
-     setting (and max-width:calc(100vw - 32px) on the container clamps
-     anything wider than the screen). */
+  /* comfier touch padding; container max-width clamps to screen */
   .bh-toast{padding:14px 12px 12px}
   /* ≥44x44 tap target so fingers don't miss into the card (which attacks). */
   .bh-toast-close{top:0;right:0;min-width:44px;min-height:44px;padding:0;font-size:26px;
@@ -2639,9 +2357,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                 this._renderActive();
             });
 
-            // Hook hunter updates → UI refresh. A refresh() cycle passes
-            // { loading:true|false } so the board activity bar tracks it
-            // regardless of whether the panel is open.
+            // hunter updates → UI refresh; {loading} drives the board activity bar even when closed
             this.hunter.onUpdate = (opts) => {
                 if (opts && typeof opts.loading === "boolean") this._setLaneBusy("bh-prog-board", opts.loading);
                 if (this._isOpen()) this._renderActive();
@@ -2649,13 +2365,10 @@ table.bh-table{width:100%;border-collapse:collapse}
             this.hunter.onWatchPoll = (busy) => this._setLaneBusy("bh-prog-watch", busy);
             this.hunter.onToast = (bounties) => this.toaster.showMany(bounties);
             this.hunter.onMatchesApplied = (ids) => this.toaster.pruneTo(ids);
-            // Med-out alerts bypass the "new matches" toast master switch —
-            // the user explicitly asked to watch these targets.
+            // Med-out alerts bypass the toast master switch — the user asked to watch these.
             this.hunter.onWatchToast = (bounties) => this.toaster.showMany(bounties);
 
-            // Countdown ticker — updates both the "next refresh in Xs" header
-            // and any live hospital-countdown badges (rows + toasts). Ticks
-            // every second; toasts live outside the panel so they tick too.
+            // 1s ticker: header "next refresh", API counter, and live hospital-countdown badges (toasts too).
             this._countdownTimer = setInterval(() => {
                 if (this._isOpen() && this.activeTab === "hunt") {
                     const el = document.getElementById("bh-countdown");
@@ -2679,10 +2392,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 
         _isOpen() { return this._panel && this._panel.classList.contains("bh-open"); }
 
-        // Drive one activity bar. busy=true → indeterminate sweep; busy=false →
-        // brief green "done" flash, then fade out. Safe to call while the panel
-        // is closed (lane just isn't visible). Guarded against a stuck bar: a
-        // new busy=true cancels any pending fade-out from the prior cycle.
+        // Drive an activity bar: busy → sweep; else green "done" flash then fade. A new busy cancels a pending fade.
         _setLaneBusy(id, busy) {
             const lane = this._panel && this._panel.querySelector("#" + id);
             if (!lane) return;
@@ -2810,8 +2520,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             const c = this.hunter.lastCounts;
             const nextIn = this.hunter.secondsUntilRefresh();
             const rateLimited = isRateLimitError(this.hunter.lastError);
-            // Only show the generic error line when it isn't a rate-limit —
-            // the rate-limit case gets its own banner below with actionable copy.
+            // generic error line only when not a rate-limit (that gets its own banner)
             const errLine = (this.hunter.lastError && !rateLimited)
                 ? `<span class="bh-err">${escHtml(this.hunter.lastError.message || "error")}</span>`
                 : "";
@@ -2825,11 +2534,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                 if (this._sortCol !== col) return "";
                 return this._sortDir === "asc" ? "sort-asc" : "sort-desc";
             };
-            // Rate-limit banner — prominent, actionable. Three sub-states:
-            //   • partial — this cycle was aborted mid-scan but produced some
-            //     matches; rows are an INCOMPLETE subset of "what's out there"
-            //   • stale prior — this cycle aborted but we kept a prior full scan
-            //   • empty — this cycle aborted with nothing to fall back on
+            // Rate-limit banner, three states: partial (aborted mid-scan, incomplete rows), stale prior (kept a prior scan), empty (nothing to fall back on).
             const isPartial = rateLimited && !!this.hunter.partialFromRateLimit;
             const scanned = c && typeof c.scanned === "number" ? c.scanned : null;
             const afterFF = c && typeof c.afterFF === "number" ? c.afterFF : null;
@@ -2865,10 +2570,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     </div>
                 `
                 : "";
-            // Paused banner — master toggle off, energy below threshold, or our
-            // own status (hospital/jail/traveling) means we can't attack. Stays
-            // above the table so the "why hasn't this refreshed?" question is
-            // answered at a glance.
+            // Why the loop is idle: master off, low energy, or our own hospital/jail/travel.
             const SELF_PAUSE_COPY = {
                 hospital: "You're in hospital",
                 jail: "You're in jail",
@@ -2924,8 +2626,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             const toggle = content.querySelector("#bh-search-toggle");
             if (toggle) {
                 toggle.addEventListener("click", () => {
-                    // Master on/off for the whole script — the board loop AND the
-                    // watchlist. Persisted + cross-tab synced via updateSettings.
+                    // Master on/off for board + watchlist; persisted + cross-tab synced.
                     this.hunter.updateSettings({ searchEnabled: !this.hunter.settings.searchEnabled });
                     this._restartLoopFromSettings();
                     this.hunter.ensureWatchLoop();
@@ -2982,8 +2683,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                         this._sortDir = this._sortDir === "asc" ? "desc" : "asc";
                     } else {
                         this._sortCol = col;
-                        // Numeric columns default to descending (biggest first),
-                        // text columns default to ascending (A–Z).
+                        // numeric cols default desc, text cols asc
                         this._sortDir = (col === "target") ? "asc" : "desc";
                     }
                     this._renderHunt();
@@ -2992,8 +2692,7 @@ table.bh-table{width:100%;border-collapse:collapse}
         }
 
         _renderDonorBanner(host) {
-            // Belt-and-braces — host is created in _renderHunt(); a missing
-            // node just means we're being called outside the Hunt tab.
+            // host missing = called outside the Hunt tab
             if (!host) return;
 
             const paint = (status) => {
@@ -3045,8 +2744,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     default: return m.reward || 0;
                 }
             };
-            // "Infinity" keys (missing data) stay at the end regardless of dir,
-            // so the user isn't bombarded with blank cells on asc.
+            // missing-data keys stay last regardless of dir
             return [...list].sort((a, b) => {
                 const ka = keyFor(a); const kb = keyFor(b);
                 const aInf = ka === Number.POSITIVE_INFINITY;
@@ -3055,13 +2753,12 @@ table.bh-table{width:100%;border-collapse:collapse}
                 if (bInf && !aInf) return -1;
                 if (ka < kb) return -1 * dir;
                 if (ka > kb) return  1 * dir;
-                // Secondary: reward desc, keeps the big ones on top within ties.
+                // tie-break: reward desc
                 return (b.reward || 0) - (a.reward || 0);
             });
         }
 
-        // Rolling API-call counter pill for the status line. Warns as it
-        // nears Torn's ~100/min ceiling.
+        // API-call counter pill; warns near ~100/min.
         _apiCounterHtml() {
             const n = apiCallsLastMinute();
             const cls = n >= RATE_WARN ? "bh-api-counter warn" : "bh-api-counter";
@@ -3071,8 +2768,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             return `<span class="${cls}" id="bh-api-counter" title="${title}">API ${n}/min</span>`;
         }
 
-        // Watchlist strip above the table: watched targets, their last-known
-        // state, projected call cost, and remove buttons. Hidden when empty.
+        // Watchlist strip above the table. Hidden when empty.
         _renderWatchStrip() {
             const wl = this.hunter.watchlist;
             const ids = Object.keys(wl);
@@ -3106,8 +2802,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             `;
         }
 
-        // Presence dot from the profile's last_action.status. No dot when
-        // unknown (e.g. a row seeded from older shared data without the field).
+        // Presence dot from last_action; none when unknown.
         _onlineDot(lastAction) {
             const cls = lastAction === "Online" ? "on"
                 : lastAction === "Idle" ? "idle"
@@ -3150,16 +2845,8 @@ table.bh-table{width:100%;border-collapse:collapse}
             `;
         }
 
-        // Lower floor than the all-fields-on minimum so a card with most
-        // fields hidden can shrink down to roughly name + Attack button.
-        // ~140 covers a 16-char ellipsised name and the attack pill.
-        //
-        // Reward sits on the head row next to the name, so enabling it costs
-        // horizontal space. FF / Battle stats / Status render as chips on a
-        // separate meta row that flex-wraps — one or two chips re-flow fine
-        // at the narrow floor, so the only time we need extra width is when
-        // all three chips are on at once (and even then the bump just keeps
-        // them on a single row at the floor width).
+        // Floor below the all-fields-on min so a stripped card shrinks to ~name + Attack.
+        // Reward and the FF/BS/Status chip trio each bump it only when on.
         _notifWidthFloor(fields) {
             const f = fields || DEFAULT_SETTINGS.notifications.fields;
             let min = 140;
@@ -3168,9 +2855,6 @@ table.bh-table{width:100%;border-collapse:collapse}
             return min;
         }
 
-        // Stand-alone so the HTML template above stays readable. Kept on the
-        // class instead of as a free function to keep all settings rendering
-        // colocated.
         _renderNotificationsSection(s) {
             const n = s.notifications || DEFAULT_SETTINGS.notifications;
             const f = n.fields || DEFAULT_SETTINGS.notifications.fields;
@@ -3236,13 +2920,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             return Math.max(lo, Math.min(hi, n));
         }
 
-        // ── Blacklist section (rendered in the Blacklist tab) ──────────────
-        //
-        // Compact layout modeled on Bazaar Deal Hunter's Rules table: each
-        // entry is one table row with an inline ✕ button. Copy / paste both
-        // hit the system clipboard directly (no persistent textareas), so
-        // the whole section stays roughly the height of the visible rows
-        // plus a single action row.
+        // ── Blacklist section (Blacklist tab) — one row per entry; copy/paste hits the clipboard directly. ──
         _renderBlacklistSection() {
             return `
                 <div class="bh-section" id="bh-bl-section">
@@ -3333,17 +3011,14 @@ table.bh-table{width:100%;border-collapse:collapse}
             $("bh-bl-add").addEventListener("click", addById);
             idInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addById(); } });
 
-            // Delegate row buttons + note edits to the tbody so we don't
-            // re-bind dozens of listeners on every refresh.
+            // Delegate to tbody — don't re-bind per row on every refresh.
             tbody.addEventListener("click", (e) => {
                 const x = e.target.closest(".bh-bl-x");
                 if (!x) return;
                 this.hunter.removeFromBlacklist(x.dataset.id);
                 refresh();
             });
-            // Persist notes on blur — avoids saving on every keystroke, which
-            // would churn localStorage and broadcast a storage event to every
-            // other tab per character typed.
+            // Persist on blur, not keystroke — avoids churning LS + a storage event per character.
             tbody.addEventListener("focusout", (e) => {
                 if (!e.target.classList.contains("bh-bl-note")) return;
                 this.hunter.setBlacklistNote(e.target.dataset.id, e.target.value);
@@ -3387,8 +3062,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             });
         }
 
-        // Tiny utility used by Hunt-row / toast blacklist buttons. Adds the
-        // player, then shows an undo toast for ~5s.
+        // Add + show a ~5s undo toast.
         _blacklistWithUndo(id, name) {
             if (this.hunter.isBlacklisted(id)) return;
             if (!this.hunter.addToBlacklist(id, name)) return;
@@ -3400,8 +3074,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             });
         }
 
-        // After persisting changes that affect the refresh loop, restart it
-        // from a clean state. Shared by the Filters and Alerts persistence paths.
+        // Restart the loop after a settings change. Shared by Filters + Alerts.
         _restartLoopFromSettings() {
             this.hunter.stop();
             if (this.hunter.settings.searchEnabled && this.hunter.settings.refreshSec > 0) {
@@ -3487,8 +3160,7 @@ table.bh-table{width:100%;border-collapse:collapse}
              "bh-set-ffmin", "bh-set-ffmax", "bh-set-unkff", "bh-set-war", "bh-set-war-cache"]
                 .forEach((id) => $(id).addEventListener("change", persistFilters));
 
-            // Grey out the numeric cap while "no hospital time limit" is on —
-            // its value is ignored in that mode.
+            // grey out the cap when "no limit" is on
             $("bh-set-hosp-nolimit").addEventListener("change", (e) => {
                 $("bh-set-hosp").disabled = e.target.checked;
             });
@@ -3500,9 +3172,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 
             $("bh-reset").addEventListener("click", () => {
                 if (!confirm("Reset filters to defaults?")) return;
-                // Preserve user-choice toggles AND the blacklist — "reset
-                // filters" shouldn't flip the master search switch, silently
-                // re-enable toasts, or wipe the user's blacklist.
+                // Preserve user-choice toggles + blacklist — "reset filters" shouldn't flip search/toasts or wipe the blacklist.
                 const cur = this.hunter.settings;
                 this.hunter.updateSettings({
                     ...DEFAULT_SETTINGS,
@@ -3825,18 +3495,14 @@ table.bh-table{width:100%;border-collapse:collapse}
     }
 
     // ════════════════════════════════════════════════════════════
-    //  Shared footer menu (eugene-torn-scripts userscripts)
-    //  — 1 script installed: its icon goes in the footer directly.
-    //  — 2+ installed: a single 3-dots menu holds them all and
-    //    expands a row above the footer on click.
-    //  Idempotent and duplicated verbatim across scripts. The
-    //  __eugFooterMenuLoaded guard ensures setup runs once per page.
+    //  Shared footer menu (eugene-torn-scripts). 1 script → icon in the
+    //  footer; 2+ → a 3-dots menu expanding a row above it. Idempotent,
+    //  duplicated verbatim across scripts; __eugFooterMenuLoaded guards
+    //  one setup per page.
     // ════════════════════════════════════════════════════════════
 
     (function setupEugFooterMenu() {
-        // Use the page's real window so scripts in different @grant sandboxes
-        // share the same registry. SPA (@grant none) and TAT (@grant GM_*)
-        // otherwise see isolated `window` objects and can't find each other.
+        // Page's real window so different @grant sandboxes share one registry (SPA @grant none vs GM_* isolated).
         const W = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
         if (W.__eugFooterMenuLoaded) return;
         W.__eugFooterMenuLoaded = true;
@@ -3947,10 +3613,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             return btn;
         }
 
-        // Legacy standalone-button IDs from pre-shared-menu versions.
-        // If a user has a mixed install (one script new, one old), the old
-        // script creates its own button under one of these IDs. Nuke them
-        // so the shared menu stays authoritative. Safe to add new IDs here.
+        // Nuke pre-shared-menu standalone buttons from mixed (old+new) installs so the shared menu stays authoritative.
         const LEGACY_BUTTON_IDS = ["tat-footer-btn", "spa-footer-btn"];
 
         function render() {
@@ -3986,9 +3649,7 @@ table.bh-table{width:100%;border-collapse:collapse}
 
         function mount() {
             render();
-            // Torn's SPA swaps the footer DOM on navigation, taking our buttons
-            // with it. Keep observing indefinitely and re-render whenever the
-            // ref button is back but our buttons are gone. Throttled via rAF.
+            // Torn's SPA swaps the footer on nav — re-render when the ref button returns but ours are gone. rAF-throttled.
             let pending = false;
             const obs = new MutationObserver(() => {
                 if (pending) return;
@@ -4054,12 +3715,7 @@ table.bh-table{width:100%;border-collapse:collapse}
         ui.inject();
         ui.setAuthed(!!initialKey);
 
-        // Cross-tab sync: when another tab writes fresh match data, adopt it
-        // here and re-render. The Hunter's own _tick path separately reads
-        // the same store on its next cycle to decide whether to skip its
-        // own fetch. Settings (searchEnabled, refreshSec, filters, …) are
-        // synced via the same storage event but a different key, so
-        // toggling search off in one tab actually stops the loop in others.
+        // Cross-tab sync: adopt another tab's match writes; settings/blacklist/watchlist ride the same storage event under their own keys.
         window.addEventListener("storage", (e) => {
             if (!e.newValue) return;
             if (e.key === LS.shared) {
@@ -4072,11 +3728,7 @@ table.bh-table{width:100%;border-collapse:collapse}
                     const next = JSON.parse(e.newValue);
                     if (next && typeof next === "object") {
                         hunter.applyExternalSettings(next);
-                        // Cross-tab notification re-positioning: only useful if
-                        // the container already exists (i.e. a toast was shown
-                        // at least once in this tab); otherwise applySettings
-                        // is a no-op and the next showMany picks up the new
-                        // values from ensureContainer().
+                        // only if a toast has been shown (container exists); else the next showMany picks up the new values
                         toaster.applySettings();
                     }
                 } catch { /* ignore malformed writes */ }
@@ -4087,10 +3739,7 @@ table.bh-table{width:100%;border-collapse:collapse}
             }
         });
 
-        // The visible tab owns watchlist polling. On focus, take over the
-        // duty (and adopt anything a sibling added while we were hidden); on
-        // blur the running tick self-suspends its requests. Kicking a tick on
-        // focus makes the handoff feel instant.
+        // Visible tab owns watchlist polling — take over on focus (kick a tick for an instant handoff).
         document.addEventListener("visibilitychange", () => {
             if (document.visibilityState === "visible") hunter.kickWatchIfVisible();
         });
