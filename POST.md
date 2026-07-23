@@ -38,6 +38,13 @@ Uploaded screenshots in use:
 </p>
 <ul style="font-size: 14px;">
   <li>
+    <strong>2026-07-23</strong> &mdash; <strong>Sound alerts</strong>: optional sound when a new-match toast pops, so you
+    don't have to watch the screen. Pick the tone (<strong>Chime / Beep / Ding / Alert</strong>) and volume, and hit
+    <strong>Preview</strong> to test it. Works on <strong>desktop and Torn PDA</strong>. <strong>Off by default</strong>;
+    turn it on in <strong>Alerts &rarr; Notifications</strong>.
+    <em>Idea from <a href="/profiles.php?XID=4314023" target="_blank" rel="noopener">GrumpyKnight806 [4314023]</a>.</em>
+  </li>
+  <li>
     <strong>2026-07-16</strong> &mdash; <strong>Ranked-war indicator</strong>: optional <strong>⚔ War</strong> badge on
     the Hunt list and toasts for targets whose faction is in an active ranked war &mdash; a heads-up that only the war
     opponent can hit them for <strong>60s</strong> right after they leave hospital/jail. <strong>Off by default</strong>,
@@ -129,7 +136,8 @@ Uploaded screenshots in use:
 </p>
 <p style="font-size: 14px;">
   New matches pop a card in the page corner &mdash; name, reward, FF, status. Click it to jump to the attack page. Up to
-  3 at once on desktop; extras roll into a <strong>+N more</strong> card. Configurable position, size, and count.
+  3 at once on desktop; extras roll into a <strong>+N more</strong> card. Configurable position, size, count, and an
+  optional <strong>sound alert</strong> (desktop and PDA).
 </p>
 <p>
   <a href="https://editor.torn.com/6c774166-ebf4-4797-8c1e-d1493e5a4d34-4192025.png" target="_blank" rel="noopener"
