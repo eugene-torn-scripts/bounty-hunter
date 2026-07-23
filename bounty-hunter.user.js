@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.20.0
+// @version      1.21.0
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.20.0";
+    const VERSION = "1.21.0";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -161,6 +161,11 @@
                 status: true,
                 location: true,       // 📍 marker when target is in a different country
                 blacklist: false,
+            },
+            sound: {                  // Web Audio beep on new-match toasts — works on desktop + PDA
+                enabled: false,
+                type: "chime",        // chime | beep | ding | alert
+                volume: 0.5,          // 0..1
             },
         },
     };
@@ -301,6 +306,7 @@
     function mergeSettings(stored) {
         const storedNotif = (stored && typeof stored.notifications === "object" && stored.notifications) || {};
         const storedFields = (storedNotif.fields && typeof storedNotif.fields === "object") ? storedNotif.fields : {};
+        const storedSound = (storedNotif.sound && typeof storedNotif.sound === "object") ? storedNotif.sound : {};
         return {
             ...DEFAULT_SETTINGS,
             ...stored,
@@ -308,6 +314,7 @@
                 ...DEFAULT_SETTINGS.notifications,
                 ...storedNotif,
                 fields: { ...DEFAULT_SETTINGS.notifications.fields, ...storedFields },
+                sound: { ...DEFAULT_SETTINGS.notifications.sound, ...storedSound },
             },
         };
     }
@@ -1707,6 +1714,59 @@
     //  TOASTER
     // ════════════════════════════════════════════════════════════
 
+    // Web Audio beeps — synthesized (no external files → no CSP/@connect issues),
+    // works the same in a desktop browser and inside the PDA WKWebView. Mobile +
+    // desktop autoplay policies block audio until a user gesture, so the context
+    // is (re)resumed on first interaction and again right before each play.
+    const SoundPlayer = (() => {
+        const G = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
+        const AC = G.AudioContext || G.webkitAudioContext;
+        let ctx = null;
+        // note = { f: freq Hz, t: start offset s, d: duration s, type?: waveform }
+        const PATTERNS = {
+            chime: [{ f: 660, t: 0, d: 0.12 }, { f: 988, t: 0.12, d: 0.20 }],
+            beep:  [{ f: 880, t: 0, d: 0.16 }],
+            ding:  [{ f: 1319, t: 0, d: 0.30 }],
+            alert: [{ f: 740, t: 0, d: 0.09 }, { f: 740, t: 0.15, d: 0.09 }, { f: 740, t: 0.30, d: 0.09 }],
+        };
+        function getCtx() {
+            if (!AC) return null;
+            if (!ctx) { try { ctx = new AC(); } catch { return null; } }
+            if (ctx.state === "suspended") ctx.resume().catch(() => {});
+            return ctx;
+        }
+        // Prime the context on the first user gesture so later programmatic plays
+        // (a toast firing with no gesture) are allowed by the autoplay policy.
+        function installUnlockHandlers() {
+            const unlock = () => { getCtx(); };
+            ["pointerdown", "touchstart", "keydown"].forEach((ev) =>
+                (G.document || document).addEventListener(ev, unlock, { capture: true, passive: true }));
+        }
+        function play(type, volume) {
+            const c = getCtx();
+            if (!c) return;
+            const notes = PATTERNS[type] || PATTERNS.chime;
+            const vol = Math.max(0, Math.min(1, Number(volume)));
+            if (vol <= 0) return;
+            const t0 = c.currentTime;
+            for (const n of notes) {
+                const osc = c.createOscillator();
+                const gain = c.createGain();
+                osc.type = n.type || "sine";
+                osc.frequency.value = n.f;
+                const start = t0 + n.t;
+                const end = start + n.d;
+                gain.gain.setValueAtTime(0.0001, start);
+                gain.gain.exponentialRampToValueAtTime(vol, start + 0.012);
+                gain.gain.exponentialRampToValueAtTime(0.0001, end);
+                osc.connect(gain).connect(c.destination);
+                osc.start(start);
+                osc.stop(end + 0.03);
+            }
+        }
+        return { play, installUnlockHandlers, TYPES: Object.keys(PATTERNS) };
+    })();
+
     class Toaster {
         // Live settings ref each call, so Settings-tab changes apply on the next toast.
         constructor(getSettings) {
@@ -1793,7 +1853,7 @@
             this._updateClearAllButton();
         }
 
-        showMany(bounties) {
+        showMany(bounties, { silent = false } = {}) {
             this.ensureContainer();
             // Clear-all / overflow cards don't count toward the bounty slot budget.
             const maxVisible = Math.max(1, Math.min(20, Number(this._notif().maxVisible) || 3));
@@ -1804,6 +1864,19 @@
             for (const b of toShow) this._showOne(b);
             if (overflow > 0) this._showMoreCard(overflow);
             this._updateClearAllButton();
+            // One beep per batch, not per card. `silent` lets the preview drive the
+            // sound explicitly so it plays even when the toggle is off.
+            if (!silent && bounties.length > 0) {
+                const snd = this._notif().sound || DEFAULT_SETTINGS.notifications.sound;
+                if (snd.enabled) SoundPlayer.play(snd.type, snd.volume);
+            }
+        }
+
+        // Always plays the configured sound, ignoring the enabled toggle — used by
+        // the Settings "Preview" button so the user can hear/tune it on demand.
+        playTestSound() {
+            const snd = this._notif().sound || DEFAULT_SETTINGS.notifications.sound;
+            SoundPlayer.play(snd.type, snd.volume);
         }
 
         _toastTimeoutMs() {
@@ -2858,6 +2931,11 @@ table.bh-table{width:100%;border-collapse:collapse}
         _renderNotificationsSection(s) {
             const n = s.notifications || DEFAULT_SETTINGS.notifications;
             const f = n.fields || DEFAULT_SETTINGS.notifications.fields;
+            const sound = n.sound || DEFAULT_SETTINGS.notifications.sound;
+            const soundVol = Math.max(0, Math.min(1, Number(sound.volume)));
+            const SOUND_LABELS = { chime: "Chime", beep: "Beep", ding: "Ding", alert: "Alert (triple)" };
+            const soundOpts = SoundPlayer.TYPES.map((t) =>
+                `<option value="${t}"${sound.type === t ? " selected" : ""}>${SOUND_LABELS[t] || t}</option>`).join("");
             const widthFloor = this._notifWidthFloor(f);
             const POSITIONS = [
                 ["bottom-right", "Bottom right"],
@@ -2906,6 +2984,18 @@ table.bh-table{width:100%;border-collapse:collapse}
                             <label class="bh-check"><input type="checkbox" id="bh-set-notif-f-blacklist"${checked(f.blacklist === true)}> Blacklist button</label>
                         </div>
                         <span class="bh-hint">The target name and the Attack button are always shown. Location shows a 📍 marker only when the target is in a different country than you. Blacklist button is off by default — enable it for one-click blacklisting from a toast.</span>
+                    </div>
+                    <label class="bh-check" style="margin-top:10px"><input type="checkbox" id="bh-set-notif-sound"${checked(sound.enabled)}> Play a sound for new matches</label>
+                    <p class="bh-hint">Works on desktop and Torn PDA. Mobile browsers stay muted until you interact with the page once — tap anywhere, then it plays.</p>
+                    <div class="bh-grid-2" style="margin-top:6px">
+                        <div class="bh-field">
+                            <label>Sound</label>
+                            <select id="bh-set-notif-sound-type" class="bh-select">${soundOpts}</select>
+                        </div>
+                        <div class="bh-field">
+                            <label>Volume (${Math.round(soundVol * 100)}%)</label>
+                            <input id="bh-set-notif-sound-vol" class="bh-input" type="range" min="0" max="100" step="5" value="${Math.round(soundVol * 100)}">
+                        </div>
                     </div>
                     <div class="bh-row-actions" style="margin-top:8px">
                         <button id="bh-notif-preview" class="bh-btn bh-btn-muted">Preview toast</button>
@@ -3287,6 +3377,11 @@ table.bh-table{width:100%;border-collapse:collapse}
                         maxVisible: this._clampInt($("bh-set-notif-max").value,              1,  20,   3),
                         timeoutSec: this._clampInt($("bh-set-notif-timeout").value,          3, 120,  15),
                         fields: fieldsObj,
+                        sound: {
+                            enabled: $("bh-set-notif-sound").checked,
+                            type:    $("bh-set-notif-sound-type").value,
+                            volume:  this._clampInt($("bh-set-notif-sound-vol").value, 0, 100, 50) / 100,
+                        },
                     },
                 });
                 this.toaster.applySettings();
@@ -3296,9 +3391,19 @@ table.bh-table{width:100%;border-collapse:collapse}
              "bh-set-notif-pos", "bh-set-notif-width", "bh-set-notif-max", "bh-set-notif-timeout",
              "bh-set-notif-f-level", "bh-set-notif-f-reward", "bh-set-notif-f-ff",
              "bh-set-notif-f-bs", "bh-set-notif-f-status", "bh-set-notif-f-location", "bh-set-notif-f-blacklist",
+             "bh-set-notif-sound", "bh-set-notif-sound-type", "bh-set-notif-sound-vol",
              "bh-set-pause-energy", "bh-set-min-energy",
              "bh-set-pause-hosp", "bh-set-pause-jail", "bh-set-pause-travel"]
                 .forEach((id) => { const el = $(id); if (el) el.addEventListener("change", persistAlerts); });
+
+            // Live "Volume (N%)" label as the slider drags, before it commits on change.
+            const soundVolEl = $("bh-set-notif-sound-vol");
+            if (soundVolEl) {
+                soundVolEl.addEventListener("input", () => {
+                    const lbl = soundVolEl.closest(".bh-field")?.querySelector("label");
+                    if (lbl) lbl.textContent = `Volume (${this._clampInt(soundVolEl.value, 0, 100, 50)}%)`;
+                });
+            }
 
             // Live projection hint under the watchlist interval input.
             const watchIntEl = $("bh-set-watch-int");
@@ -3315,6 +3420,8 @@ table.bh-table{width:100%;border-collapse:collapse}
 
             $("bh-notif-preview").addEventListener("click", () => {
                 persistAlerts();
+                // warActive mirrors the ⚔ War setting so the preview shows the same
+                // chip a real toast would when the ranked-war indicator is on.
                 this.toaster.showMany([{
                     target_id: -1,
                     target_name: "Preview Target",
@@ -3327,7 +3434,10 @@ table.bh-table{width:100%;border-collapse:collapse}
                     bountyCount: 1,
                     awayFromMe: true,
                     location: "Mexico",
-                }]);
+                    warActive: !!this.hunter.settings.warStatus,
+                }], { silent: true });
+                // Always play so the button doubles as a sound test, even with the toggle off.
+                this.toaster.playTestSound();
             });
         }
 
@@ -3708,6 +3818,10 @@ table.bh-table{width:100%;border-collapse:collapse}
         const hunter = new Hunter(api);
         const toaster = new Toaster(() => hunter.settings);
         const ui = new UI(hunter, toaster);
+
+        // Prime Web Audio on the first user gesture so toast beeps aren't blocked
+        // by the desktop/mobile autoplay policy when a match fires later.
+        SoundPlayer.installUnlockHandlers();
 
         // Toaster needs a way to reach the UI for its "+N more" card.
         window.__bhUI = ui;
