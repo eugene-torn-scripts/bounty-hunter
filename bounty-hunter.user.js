@@ -162,7 +162,7 @@
                 location: true,       // 📍 marker when target is in a different country
                 blacklist: false,
             },
-            sound: {                  // Web Audio beep on new-match toasts — works on desktop + PDA
+            sound: {
                 enabled: false,
                 type: "chime",        // chime | beep | ding | alert
                 volume: 0.5,          // 0..1
@@ -1714,15 +1714,11 @@
     //  TOASTER
     // ════════════════════════════════════════════════════════════
 
-    // Web Audio beeps — synthesized (no external files → no CSP/@connect issues),
-    // works the same in a desktop browser and inside the PDA WKWebView. Mobile +
-    // desktop autoplay policies block audio until a user gesture, so the context
-    // is (re)resumed on first interaction and again right before each play.
+    // Synthesized so there are no external files to fetch (CSP/@connect would block them).
     const SoundPlayer = (() => {
         const G = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
         const AC = G.AudioContext || G.webkitAudioContext;
         let ctx = null;
-        // note = { f: freq Hz, t: start offset s, d: duration s, type?: waveform }
         const PATTERNS = {
             chime: [{ f: 660, t: 0, d: 0.12 }, { f: 988, t: 0.12, d: 0.20 }],
             beep:  [{ f: 880, t: 0, d: 0.16 }],
@@ -1735,8 +1731,8 @@
             if (ctx.state === "suspended") ctx.resume().catch(() => {});
             return ctx;
         }
-        // Prime the context on the first user gesture so later programmatic plays
-        // (a toast firing with no gesture) are allowed by the autoplay policy.
+        // Autoplay policy blocks audio until a user gesture, so prime the context on
+        // the first interaction — later toast beeps fire with no gesture of their own.
         function installUnlockHandlers() {
             const unlock = () => { getCtx(); };
             ["pointerdown", "touchstart", "keydown"].forEach((ev) =>
@@ -1864,16 +1860,14 @@
             for (const b of toShow) this._showOne(b);
             if (overflow > 0) this._showMoreCard(overflow);
             this._updateClearAllButton();
-            // One beep per batch, not per card. `silent` lets the preview drive the
-            // sound explicitly so it plays even when the toggle is off.
+            // One beep per batch, not per card. `silent` lets the preview play it itself.
             if (!silent && bounties.length > 0) {
                 const snd = this._notif().sound || DEFAULT_SETTINGS.notifications.sound;
                 if (snd.enabled) SoundPlayer.play(snd.type, snd.volume);
             }
         }
 
-        // Always plays the configured sound, ignoring the enabled toggle — used by
-        // the Settings "Preview" button so the user can hear/tune it on demand.
+        // Plays regardless of the enabled toggle, so Preview doubles as a sound test.
         playTestSound() {
             const snd = this._notif().sound || DEFAULT_SETTINGS.notifications.sound;
             SoundPlayer.play(snd.type, snd.volume);
@@ -3396,7 +3390,6 @@ table.bh-table{width:100%;border-collapse:collapse}
              "bh-set-pause-hosp", "bh-set-pause-jail", "bh-set-pause-travel"]
                 .forEach((id) => { const el = $(id); if (el) el.addEventListener("change", persistAlerts); });
 
-            // Live "Volume (N%)" label as the slider drags, before it commits on change.
             const soundVolEl = $("bh-set-notif-sound-vol");
             if (soundVolEl) {
                 soundVolEl.addEventListener("input", () => {
@@ -3420,8 +3413,6 @@ table.bh-table{width:100%;border-collapse:collapse}
 
             $("bh-notif-preview").addEventListener("click", () => {
                 persistAlerts();
-                // warActive mirrors the ⚔ War setting so the preview shows the same
-                // chip a real toast would when the ranked-war indicator is on.
                 this.toaster.showMany([{
                     target_id: -1,
                     target_name: "Preview Target",
@@ -3436,7 +3427,6 @@ table.bh-table{width:100%;border-collapse:collapse}
                     location: "Mexico",
                     warActive: !!this.hunter.settings.warStatus,
                 }], { silent: true });
-                // Always play so the button doubles as a sound test, even with the toggle off.
                 this.toaster.playTestSound();
             });
         }
@@ -3819,8 +3809,6 @@ table.bh-table{width:100%;border-collapse:collapse}
         const toaster = new Toaster(() => hunter.settings);
         const ui = new UI(hunter, toaster);
 
-        // Prime Web Audio on the first user gesture so toast beeps aren't blocked
-        // by the desktop/mobile autoplay policy when a match fires later.
         SoundPlayer.installUnlockHandlers();
 
         // Toaster needs a way to reach the UI for its "+N more" card.
