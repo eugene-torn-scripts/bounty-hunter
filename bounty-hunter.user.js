@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bounty Hunter
 // @namespace    https://github.com/eugene-torn-scripts/bounty-hunter
-// @version      1.21.0
+// @version      1.21.1
 // @description  Live Torn bounty board filter — min reward, FFScouter fair-fight range, Okay/Hospital status, med-out watchlist — with clickable attack toasts. Desktop + Torn PDA.
 // @author       lannav
 // @match        https://www.torn.com/*
@@ -47,7 +47,7 @@
     const PDA_API_KEY = "###PDA-APIKEY###";
     const PDA_PLACEHOLDER = "###" + "PDA-APIKEY" + "###"; // split to avoid self-substitution
 
-    const VERSION = "1.21.0";
+    const VERSION = "1.21.1";
     const LS = {
         apiKey:    "bh_apiKey",
         ffKey:     "bh_ffscouterKey",
@@ -1215,6 +1215,27 @@
             }
         }
 
+        _pruneMatchesToBoard(board) {
+            let changed = false;
+            const kept = [];
+            for (const m of this.lastMatches) {
+                const live = board.get(`${m.target_id}|${m.reward}`);
+                if (!live) { changed = true; continue; }
+                if (typeof m.bountyCount === "number" && live.bountyCount < m.bountyCount) {
+                    kept.push({ ...m, bountyCount: live.bountyCount });
+                    changed = true;
+                } else {
+                    kept.push(m);
+                }
+            }
+            if (!changed) return;
+            logDebug(`board: dropped ${this.lastMatches.length - kept.length} claimed/expired row(s) before the full scan`, "info");
+            this.lastMatches = kept;
+            this.lastMatchIds = new Set(kept.map((m) => `${m.target_id}|${m.reward}`));
+            if (this.onMatchesApplied) this.onMatchesApplied(new Set(kept.map((m) => Number(m.target_id))));
+            if (this.onUpdate) this.onUpdate({ loading: true });
+        }
+
         // Another tab's settings change. No saveSettings (they already persisted) — avoids write ping-pong.
         applyExternalSettings(next) {
             this.settings = { ...this.settings, ...next };
@@ -1508,6 +1529,7 @@
                 grouped.get(key).bountyCount += inc;
             }
             const dedupedBounties = [...grouped.values()];
+            this._pruneMatchesToBoard(grouped);
 
             const counts = {
                 total: bounties.length,
